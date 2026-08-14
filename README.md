@@ -21,7 +21,7 @@ sponsored by Veeam Software.
 
 ## Requirements
 
-- Home Assistant 2024.10 or newer
+- Home Assistant 2026.1 or newer
 - The [ha-veeam-365](https://github.com/Cenvora/ha-veeam-365) integration, set up and producing
   entities
 
