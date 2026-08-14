@@ -1,0 +1,44 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # HACS' own requirements move; a weekly run catches that without a push
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          # "plugin" is the machine-readable name of the category HACS shows as "Dashboard"
+          category: plugin
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # No dependencies to install: plain ESM plus node:test
+      - name: Run tests
+        run: node --test
+
+  filename:
+    name: Filename matches hacs.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the plugin file exists where HACS expects it
+        run: |
+          expected=$(python3 -c "import json;print(json.load(open('hacs.json'))['filename'])")
+          test -f "$expected" || { echo "hacs.json points at $expected, which does not exist"; exit 1; }
+          echo "found $expected"
