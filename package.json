@@ -1,0 +1,15 @@
+{
+  "name": "ha-veeam-365-dashboard",
+  "version": "0.1.0",
+  "description": "Auto-generating Home Assistant dashboard for Veeam Backup for Microsoft 365",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cenvora/ha-veeam-365-dashboard.git"
+  }
+}

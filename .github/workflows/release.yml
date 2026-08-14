@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  attach:
+    name: Attach plugin to release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Run tests before shipping
+        run: node --test
+
+      # HACS installs from the release asset when one is present, so the tag and the served
+      # file cannot drift apart
+      - name: Attach the plugin file
+        uses: softprops/action-gh-release@v2
+        with:
+          files: veeam-365-dashboard.js
