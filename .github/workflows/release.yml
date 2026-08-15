@@ -24,6 +24,6 @@ jobs:
       # HACS installs from the release asset when one is present, so the tag and the served
       # file cannot drift apart
       - name: Attach the plugin file
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: veeam-365-dashboard.js
