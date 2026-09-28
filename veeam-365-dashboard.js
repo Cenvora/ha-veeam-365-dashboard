@@ -17,8 +17,8 @@
  *
  * Options (all optional):
  *   group                 Only for the view strategy: overview | organizations | jobs |
- *                         repositories | infrastructure (which covers the backup proxies, the
- *                         servers and licensing). Defaults to overview.
+ *                         repositories | infrastructure (which covers the proxy pools, the
+ *                         backup proxies, the servers and licensing). Defaults to overview.
  *   title, icon, path     Name the generated view. A view strategy has to supply these
  *                         itself: Home Assistant applies the generated config over the view's
  *                         own keys, so a title set beside `strategy:` is ignored, and renaming
@@ -47,6 +47,7 @@ const MODEL = {
   COPY_JOB: "Backup Copy Job",
   REPOSITORY: "Backup Repository",
   PROXY: "Backup Proxy",
+  PROXY_POOL: "Backup Proxy Pool",
   ORGANIZATION: "Microsoft 365 Organization",
   SERVER: "Backup for Microsoft 365",
   LICENSE: "License",
@@ -59,6 +60,8 @@ const MODEL_DISPLAY = [
   [MODEL.JOB, "Backup jobs", "mdi:backup-restore"],
   [MODEL.COPY_JOB, "Backup copy jobs", "mdi:content-copy"],
   [MODEL.REPOSITORY, "Repositories", "mdi:database"],
+  // A pool before the proxies in it
+  [MODEL.PROXY_POOL, "Proxy pools", "mdi:lan"],
   [MODEL.PROXY, "Backup proxies", "mdi:server-network"],
   [MODEL.SERVER, "Servers", "mdi:server"],
   [MODEL.LICENSE, "Licensing", "mdi:certificate"],
@@ -106,6 +109,7 @@ const MODEL_KIND = {
   [MODEL.COPY_JOB]: "Copy Job",
   [MODEL.REPOSITORY]: "Repository",
   [MODEL.PROXY]: "Proxy",
+  [MODEL.PROXY_POOL]: "Proxy Pool",
   [MODEL.ORGANIZATION]: "Organization",
   [MODEL.SERVER]: "Server",
   [MODEL.LICENSE]: "License",
@@ -235,6 +239,34 @@ const ROLE = {
     eid: ["_operating_system"],
   },
 
+  // Backup proxy pools (API v8), whose state the integration derives from their proxies.
+  // "_online_proxies" also ends in "_proxies", so POOL_ONLINE_PROXIES is always tried first
+  POOL_ONLINE: {
+    keys: ["proxy_pool_online"],
+    uid: ["_online"],
+    eid: ["_online"],
+    domain: "binary_sensor",
+  },
+  // On is a Problem: some of the pool's proxies are offline
+  POOL_DEGRADED: {
+    keys: ["proxy_pool_degraded"],
+    uid: ["_degraded"],
+    eid: ["_degraded"],
+    domain: "binary_sensor",
+  },
+  POOL_ONLINE_PROXIES: {
+    keys: ["proxy_pool_online_proxies"],
+    uid: ["_online_proxies"],
+    eid: ["_online_proxies"],
+    domain: "sensor",
+  },
+  POOL_PROXIES: {
+    keys: ["proxy_pool_proxies"],
+    uid: ["_proxies"],
+    eid: ["_proxies"],
+    domain: "sensor",
+  },
+
   // Microsoft 365 organizations. Last Backup is the shared LAST_BACKUP role
   BACKED_UP: { keys: ["organization_backed_up"], uid: ["_backed_up"], eid: ["_backed_up"] },
   LICENSED_USERS: {
@@ -330,6 +362,7 @@ const PRIMARY_ROLES = {
   [MODEL.COPY_JOB]: [ROLE.LAST_STATUS, ROLE.LAST_BACKUP],
   [MODEL.REPOSITORY]: [ROLE.ACCESSIBLE, ROLE.USED_SPACE],
   [MODEL.PROXY]: [ROLE.PROXY_ONLINE, ROLE.PROXY_MAINTENANCE_MODE],
+  [MODEL.PROXY_POOL]: [ROLE.POOL_ONLINE, ROLE.POOL_DEGRADED],
   // Backed Up is filed as diagnostic, yet whether a tenant has any backup is the question
   [MODEL.ORGANIZATION]: [ROLE.BACKED_UP, ROLE.LAST_BACKUP],
   [MODEL.SERVER]: [ROLE.CONNECTED, ROLE.VERSION],
@@ -398,6 +431,10 @@ const ENTITY_ORDER = [
   ROLE.MAINTENANCE,
   ROLE.CACHE_IN_SYNC,
   ROLE.PROXY_ONLINE,
+  ROLE.POOL_ONLINE,
+  ROLE.POOL_DEGRADED,
+  ROLE.POOL_ONLINE_PROXIES,
+  ROLE.POOL_PROXIES,
   ROLE.ENABLED,
   ROLE.OUT_OF_DATE,
   ROLE.MAINTENANCE_STATUS,
@@ -442,8 +479,9 @@ const ENTITY_ORDER = [
 
 /**
  * Figures that belong together, shown as one compact row rather than a tile each: a job's
- * latest session, and what an organization protects. `name` is the short label inside the row,
- * whose title already says the rest; a name the user gave the entity still wins.
+ * latest session, what an organization protects, and how many of a pool's proxies are online.
+ * `name` is the short label inside the row, whose title already says the rest; a name the user
+ * gave the entity still wins.
  */
 const GLANCE_GROUPS = [
   {
@@ -462,6 +500,13 @@ const GLANCE_GROUPS = [
       [ROLE.PROTECTED_GROUPS, "Groups"],
       [ROLE.PROTECTED_SITES, "Sites"],
       [ROLE.PROTECTED_TEAMS, "Teams"],
+    ],
+  },
+  {
+    title: "Proxies",
+    members: [
+      [ROLE.POOL_ONLINE_PROXIES, "Online"],
+      [ROLE.POOL_PROXIES, "Total"],
     ],
   },
 ];
@@ -876,9 +921,9 @@ function deviceCards(entities, device) {
 /**
  * What went wrong, shown only while it is wrong.
  *
- * Health OK, Service Health and an organization's Sync each put the reason for a bad state in
- * an attribute, and a bare "Problem" does not say where to look. The visibility condition is
- * evaluated live, so nothing here is fixed at render time.
+ * Health OK, Service Health, an organization's Sync and a pool's Degraded each put the reason
+ * for a bad state in an attribute, and a bare "Problem" does not say where to look. The
+ * visibility condition is evaluated live, so nothing here is fixed at render time.
  */
 function problemNotes(entities) {
   const notes = [];
@@ -916,6 +961,19 @@ function problemNotes(entities) {
       markdown(
         `{% set error = state_attr('${id}', 'error') %}` +
           "**Last sync failed**{% if error %}: {{ error }}{% else %}.{% endif %}",
+        { visibility: [{ condition: "state", entity: id, state: "on" }] },
+      ),
+    );
+  }
+
+  const degraded = findByRoles(entities, [ROLE.POOL_DEGRADED]);
+  if (degraded) {
+    const id = degraded.entity_id;
+    notes.push(
+      markdown(
+        `{% set offline = state_attr('${id}', 'offline_proxies') or [] %}` +
+          "**Offline proxies:** {% if offline %}{{ offline | join(', ') }}" +
+          "{% else %}some of this pool's proxies are offline.{% endif %}",
         { visibility: [{ condition: "state", entity: id, state: "on" }] },
       ),
     );
@@ -1045,7 +1103,7 @@ export function buildSections(group, registries, config) {
     case "repositories":
       return sectionsFor([MODEL.REPOSITORY]);
     case "infrastructure":
-      return sectionsFor([MODEL.PROXY, MODEL.SERVER, MODEL.LICENSE]);
+      return sectionsFor([MODEL.PROXY_POOL, MODEL.PROXY, MODEL.SERVER, MODEL.LICENSE]);
     case "overview":
     default:
       return overviewSections(groups, byDevice, labels, multiServer, opts, columns);

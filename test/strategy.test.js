@@ -1112,6 +1112,7 @@ test("a name the user gave a device is shown as given", () => {
 const ORG = "vb365_organization_mayfamily512_onmicrosoft_com";
 const ORG_NAME = "mayfamily512.onmicrosoft.com";
 const PROXY = "vb365_proxy_proxy01_example_com";
+const POOL = "vb365_proxy_pool_primary";
 const JOB = "vb365_job_main_org_backup";
 const COPY = "vb365_main_org_backup_copy_job";
 const REPO = "vb365_repository_main";
@@ -1140,7 +1141,12 @@ function sessionEntities(slug, deviceId, prefix) {
   ];
 }
 
-function featureRegistries({ organizations = true, proxies = true, sessions = true } = {}) {
+function featureRegistries({
+  organizations = true,
+  proxies = true,
+  pools = true,
+  sessions = true,
+} = {}) {
   const devices = [
     device("job-1", "VB365 Job Main Org Backup", "Backup Job"),
     device("copy-1", "VB365 Main Org Backup Copy Job", "Backup Copy Job"),
@@ -1268,6 +1274,26 @@ function featureRegistries({ organizations = true, proxies = true, sessions = tr
       proxy("sensor", "memory_usage", "Memory Usage"),
       proxy("sensor", "version", "Version", DIAGNOSTIC),
       proxy("sensor", "operating_system", "Operating System", DIAGNOSTIC),
+    );
+  }
+
+  if (pools) {
+    const pool = (domain, suffix, name) =>
+      feature(
+        domain,
+        POOL,
+        suffix,
+        "pool-1",
+        name,
+        `proxy_pool_${suffix}`,
+        `proxy_pool_pp1_${suffix}`,
+      );
+    devices.push(device("pool-1", "VB365 Proxy Pool Primary", "Backup Proxy Pool"));
+    entities.push(
+      pool("binary_sensor", "online", "Online"),
+      pool("binary_sensor", "degraded", "Degraded"),
+      pool("sensor", "proxies", "Proxies"),
+      pool("sensor", "online_proxies", "Online Proxies"),
     );
   }
 
@@ -1427,6 +1453,24 @@ for (const [scheme, convert] of SCHEMES) {
     ]);
   });
 
+  test(`${scheme}: a proxy pool leads with Online, then counts its proxies in one row`, () => {
+    const { data, toOriginal } = build();
+    const overview = sectionByHeading(buildSections("overview", data, {}), "Proxy pools");
+    const pool = sectionByHeading(buildSections("infrastructure", data, {}), "Primary");
+
+    assert.ok(pool, "the section is titled with the pool, without VB365 Proxy Pool");
+    assert.deepEqual(layout(overview, toOriginal), [
+      ["tile", id("binary_sensor", POOL, "online")],
+    ]);
+    assert.deepEqual(layout(pool, toOriginal), [
+      ["tile", id("binary_sensor", POOL, "online")],
+      ["tile", id("binary_sensor", POOL, "degraded")],
+      // "_online_proxies" also ends in "_proxies": Online still comes first, Total second
+      ["glance", [id("sensor", POOL, "online_proxies"), id("sensor", POOL, "proxies")]],
+      ["markdown"],
+    ]);
+  });
+
   test(`${scheme}: the headline counts organizations not backed up`, () => {
     const { data } = build();
     const content = markdownIn(buildSections("overview", data, {}))[0];
@@ -1541,11 +1585,41 @@ test("server health notes name what failed, and only show while it is failing", 
   assert.match(service.content, /'problems'/);
 });
 
-test("the infrastructure view lists proxies before the server", () => {
+test("the infrastructure view lists pools, then proxies, then the server", () => {
   assert.deepEqual(headings(buildSections("infrastructure", featureRegistries(), {})), [
+    "Primary",
     "proxy01.example.com",
     `Server ${HOST}`,
   ]);
+});
+
+test("the overview puts proxy pools just before the proxies", () => {
+  const titles = headings(buildSections("overview", featureRegistries(), {}));
+
+  assert.equal(titles.indexOf("Proxy pools") + 1, titles.indexOf("Backup proxies"));
+});
+
+test("a pool's offline proxies are named only while it is degraded", () => {
+  const infra = buildSections("infrastructure", featureRegistries(), {});
+  const pool = sectionByHeading(infra, "Primary");
+  const note = pool.cards.find((c) => c.type === "markdown");
+  const degraded = id("binary_sensor", POOL, "degraded");
+
+  // Degraded is a Problem sensor: on means some proxies are offline
+  assert.deepEqual(note.visibility, [{ condition: "state", entity: degraded, state: "on" }]);
+  assert.ok(note.content.includes(`state_attr('${degraded}', 'offline_proxies')`));
+});
+
+test("a pool's proxy counts are named Online and Total", () => {
+  const infra = buildSections("infrastructure", featureRegistries(), {});
+  const pool = sectionByHeading(infra, "Primary");
+  const row = glancesIn([pool])[0];
+
+  assert.equal(row.title, "Proxies");
+  assert.deepEqual(
+    row.entities.map((e) => e.name),
+    ["Online", "Total"],
+  );
 });
 
 test("with only organizations reporting, the headline still reports them", () => {
@@ -1572,10 +1646,19 @@ test("without organizations there is no organization view, section or headline l
 });
 
 test("without proxies there is no proxy section", () => {
-  const data = featureRegistries({ proxies: false });
+  const data = featureRegistries({ proxies: false, pools: false });
 
   assert.ok(!headings(buildSections("overview", data, {})).includes("Backup proxies"));
   assert.deepEqual(headings(buildSections("infrastructure", data, {})), [`Server ${HOST}`]);
+});
+
+test("without pools (API v6 and v7) there is no pool section, row or note", () => {
+  const data = featureRegistries({ pools: false });
+  const infra = buildSections("infrastructure", data, {});
+
+  assert.ok(!headings(buildSections("overview", data, {})).includes("Proxy pools"));
+  assert.deepEqual(headings(infra), ["proxy01.example.com", `Server ${HOST}`]);
+  assert.equal(glancesIn(infra).length, 0);
 });
 
 test("without session sensors a job card has no session row", () => {

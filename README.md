@@ -73,11 +73,11 @@ That's the entire configuration. You get up to five views:
 
 | View | Contents |
 | ---- | -------- |
-| **Overview** | A live headline, server and licence badges, and one tile per organization, job, copy job, repository and proxy |
+| **Overview** | A live headline, server and licence badges, and one tile per organization, job, copy job, repository, proxy pool and proxy |
 | **Organizations** | A section per Microsoft 365 organization: whether it is backed up, what it protects, its licensed users, and its cache sync with a Synchronize button |
 | **Jobs** | A section per backup job and backup copy job, with its sensors, its latest session and start/stop buttons |
 | **Repositories** | A section per backup repository, with its state, maintenance, and cache synchronization and maintenance buttons |
-| **Infrastructure** | Backup proxies, server details and health, and licensing |
+| **Infrastructure** | Proxy pools, backup proxies, server details and health, and licensing |
 
 Views with nothing to show are left out, so a server with no copy jobs does not get an empty
 tab.
@@ -140,8 +140,8 @@ configured, section titles are suffixed with the server's host — so two jobs b
 
 The strategy asks Home Assistant for the device and entity registries, keeps entities whose
 platform is `veeam_365`, and groups their devices by model — `Microsoft 365 Organization`,
-`Backup Job`, `Backup Copy Job`, `Backup Repository`, `Backup Proxy`, `Backup for Microsoft 365`,
-`License`.
+`Backup Job`, `Backup Copy Job`, `Backup Repository`, `Backup Proxy Pool`, `Backup Proxy`,
+`Backup for Microsoft 365`, `License`.
 
 Working from the registry rather than matching entity IDs means renaming an entity or a device
 does not break the dashboard, and disabled entities are never given a tile that would render
@@ -182,14 +182,18 @@ A few deliberate choices in the layout:
   flag, the latest maintenance session's status, and Start/Stop Maintenance buttons.
 - **Backup proxies lead with Online**, followed by maintenance mode and CPU and memory usage
   (API v8). They get a section on the overview and one each in the Infrastructure view.
+- **Proxy pools lead with Online** (API v8): whether any of the pool's proxies can process.
+  Degraded follows, and then how many of its proxies are online out of the total, as one row.
+  While the pool is degraded, a note names the offline proxies. Pools come just before the
+  proxies, on the overview and in the Infrastructure view.
 - **Server health is on the server's section**: *Health OK* (whether every endpoint answered the
   last poll) and *Service Health* (the server's own verdict from `/v8/Health`). While either
   is bad, a note under them says what failed — the failing endpoints, or the server's list of
   problems — and an organization whose last sync failed shows its error the same way. The notes
   hide with a live visibility condition, so they come and go without a reload.
 - **Nothing is shown for what a server does not have.** Older VB365 and API versions without
-  organization sync, protected counts, proxy details, job sessions, repository maintenance or
-  the health report get no tiles, rows, notes or sections for them.
+  organization sync, protected counts, proxy details, proxy pools, job sessions, repository
+  maintenance or the health report get no tiles, rows, notes or sections for them.
 - **Copy jobs get their own section**, because a backup and its copy are separate objects with
   separate outcomes, and mixing them makes a failed copy easy to miss.
 - **Licence usage is in the headline.** VB365 licenses per protected user and picks up new users
@@ -211,7 +215,7 @@ node --test        # or: npm test
 
 The tests import the module directly and feed it registry fixtures, asserting on the generated
 dashboard configuration — grouping, filtering, multi-server labelling, the organization, proxy,
-health, maintenance and session layouts under each way of identifying an entity, and the empty
+proxy pool, health, maintenance and session layouts under each way of identifying an entity, and the empty
 state.
 
 ## Related
