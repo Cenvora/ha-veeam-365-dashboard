@@ -84,37 +84,136 @@ const DEFAULTS = {
 };
 
 /**
+ * Prefix the integration puts on every device name ("VB365 Job Daily Mail"). Installs from before
+ * it was added keep their unprefixed names until the integration next updates the device.
+ */
+const DEVICE_PREFIX = /^VB365\s+/i;
+
+/**
+ * The kind word the integration puts after the prefix, per model. Inside a section headed
+ * "Backup jobs", "Job" in every tile name is noise, so it is dropped for these models.
+ */
+const MODEL_KIND = {
+  [MODEL.JOB]: "Job",
+  [MODEL.COPY_JOB]: "Copy Job",
+  [MODEL.REPOSITORY]: "Repository",
+  [MODEL.SERVER]: "Server",
+  [MODEL.LICENSE]: "License",
+};
+
+/**
+ * The entities the layout looks for by meaning.
+ *
+ * An entity is identified, in order of trust, by:
+ *   keys  its translation key — set by the integration and stable across renames and across
+ *         old and new installs, once the integration has been updated
+ *   uid   a suffix of its unique ID — the same in every version of the integration
+ *   eid   a suffix of its entity ID, ignoring a trailing "_2" that Home Assistant adds on
+ *         collision. Old installs got IDs from the old English names ("_online",
+ *         "_used_licenses"); new installs get them from the device name plus the translated
+ *         entity name ("vb365_repository_x_cache_in_sync"), so both are listed
+ *
+ * The first identifier the entity actually carries decides; a later one is only a fallback for
+ * registries that do not report the earlier one.
+ */
+const ROLE = {
+  LAST_STATUS: {
+    keys: ["job_last_status", "copy_job_last_status"],
+    uid: ["_last_status"],
+    eid: ["_last_status"],
+  },
+  LAST_BACKUP: {
+    keys: ["job_last_backup", "copy_job_last_backup"],
+    uid: ["_last_backup"],
+    eid: ["_last_backup"],
+  },
+  LAST_RUN: { keys: ["job_last_run", "copy_job_last_run"], uid: ["_last_run"], eid: ["_last_run"] },
+  NEXT_RUN: { keys: ["job_next_run"], uid: ["_next_run"], eid: ["_next_run"] },
+  ENABLED: {
+    keys: ["job_is_enabled", "copy_job_is_enabled"],
+    uid: ["_is_enabled"],
+    eid: ["_enabled"],
+  },
+  // Reports the repository's Invalid state on API v8; the reachability question
+  ACCESSIBLE: { keys: ["repository_accessible"], uid: ["_accessible"], eid: ["_accessible"] },
+  // Formerly named "Online", which it never measured. Existing installs keep the "_online" ID
+  CACHE_IN_SYNC: {
+    keys: ["repository_cache_in_sync"],
+    uid: ["_online"],
+    eid: ["_cache_in_sync", "_online"],
+  },
+  OUT_OF_DATE: { keys: ["repository_out_of_date"], uid: ["_out_of_date"], eid: ["_out_of_date"] },
+  USED_SPACE: { keys: ["repository_used_space"], uid: ["_used_space"], eid: ["_used_space"] },
+  CONNECTED: { keys: ["server_connected"], uid: ["_server_connected"], eid: ["_connected"] },
+  VERSION: { keys: ["server_version"], uid: ["_server_version"], eid: ["_product_version"] },
+  LICENSE_STATUS: { keys: ["license_status"], uid: ["_license_status"], eid: ["_status"] },
+  LICENSE_EXPIRATION: {
+    keys: ["license_expiration"],
+    uid: ["_license_expiration"],
+    eid: ["_expiration_date"],
+  },
+  LICENSE_USED: {
+    keys: ["license_used_number"],
+    uid: ["_license_used_number"],
+    eid: ["_used_licenses"],
+  },
+  LICENSE_TOTAL: {
+    keys: ["license_total_number"],
+    uid: ["_license_total_number"],
+    eid: ["_total_licenses"],
+  },
+};
+
+/**
  * The one entity that answers "is this thing all right?", per model.
  *
  * The overview shows exactly one tile per device, named for the device — several tiles from one
  * device all carrying the device name is what makes it unreadable. First match wins.
  */
-const PRIMARY_SUFFIXES = {
-  [MODEL.JOB]: ["_last_status", "_last_backup"],
-  [MODEL.COPY_JOB]: ["_last_status", "_last_backup"],
-  [MODEL.REPOSITORY]: ["_online", "_used_space", "_accessible"],
-  [MODEL.SERVER]: ["_connected", "_version"],
-  [MODEL.LICENSE]: ["_status", "_expiration"],
+const PRIMARY_ROLES = {
+  [MODEL.JOB]: [ROLE.LAST_STATUS, ROLE.LAST_BACKUP],
+  [MODEL.COPY_JOB]: [ROLE.LAST_STATUS, ROLE.LAST_BACKUP],
+  [MODEL.REPOSITORY]: [ROLE.ACCESSIBLE, ROLE.USED_SPACE],
+  [MODEL.SERVER]: [ROLE.CONNECTED, ROLE.VERSION],
+  [MODEL.LICENSE]: [ROLE.LICENSE_STATUS, ROLE.LICENSE_EXPIRATION],
 };
 
 /** Entities promoted to badges, most important first. */
-const BADGE_SUFFIXES = {
-  [MODEL.SERVER]: ["_connected"],
-  [MODEL.LICENSE]: ["_status", "_expiration"],
+const BADGE_ROLES = {
+  [MODEL.SERVER]: [ROLE.CONNECTED],
+  [MODEL.LICENSE]: [ROLE.LICENSE_STATUS, ROLE.LICENSE_EXPIRATION],
 };
+
+/**
+ * Entities the layout is built around. The integration files several of them as diagnostic —
+ * Connected, the license counts, the repository flags — which would otherwise leave the badges,
+ * the license headline and whole device sections empty with diagnostics off.
+ */
+const ESSENTIAL_ROLES = [
+  ...new Set([
+    ...Object.values(PRIMARY_ROLES).flat(),
+    ...Object.values(BADGE_ROLES).flat(),
+    ROLE.LICENSE_USED,
+    ROLE.LICENSE_TOTAL,
+  ]),
+];
 
 /** Within a device section, states read best in this order. */
 const ENTITY_ORDER = [
-  "_last_status",
-  "_online",
-  "_accessible",
-  "_is_enabled",
-  "_enabled",
-  "_out_of_date",
-  "_used_space",
-  "_last_backup",
-  "_last_run",
-  "_next_run",
+  ROLE.LAST_STATUS,
+  ROLE.ACCESSIBLE,
+  ROLE.CACHE_IN_SYNC,
+  ROLE.ENABLED,
+  ROLE.OUT_OF_DATE,
+  ROLE.USED_SPACE,
+  ROLE.LAST_BACKUP,
+  ROLE.LAST_RUN,
+  ROLE.NEXT_RUN,
+  ROLE.CONNECTED,
+  ROLE.LICENSE_STATUS,
+  ROLE.LICENSE_EXPIRATION,
+  ROLE.LICENSE_USED,
+  ROLE.LICENSE_TOTAL,
 ];
 
 function options(config) {
@@ -125,8 +224,57 @@ function deviceName(device) {
   return device.name_by_user || device.name || "Unnamed";
 }
 
+/**
+ * The device name as a title: "VB365 Job Daily Mail" reads "Daily Mail" under Backup jobs.
+ *
+ * The "VB365" prefix is dropped always — it only exists to keep entity IDs apart from the
+ * Backup & Replication integration. The kind word is dropped for jobs, copy jobs and
+ * repositories (their sections and icons already say what they are), and for servers and
+ * licenses only when `dropKind` is set: in the Infrastructure view "Server host" and
+ * "License host" are only told apart by it. A name the user gave the device is theirs and
+ * shown as-is; old installs' unprefixed names pass through unchanged.
+ */
+function displayName(device, { dropKind = !PLATFORM_MODELS.includes(device.model) } = {}) {
+  if (device.name_by_user) return device.name_by_user;
+
+  const name = device.name || "";
+  if (!DEVICE_PREFIX.test(name)) return name || "Unnamed";
+
+  const rest = name.replace(DEVICE_PREFIX, "").trim();
+  const kind = MODEL_KIND[device.model];
+  if (dropKind && kind) {
+    const withoutKind = rest.replace(new RegExp(`^${kind}\\s+`, "i"), "").trim();
+    if (withoutKind && withoutKind !== rest) return withoutKind;
+  }
+  return rest || name;
+}
+
+function slugify(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function byName(a, b) {
-  return deviceName(a).localeCompare(deviceName(b), undefined, { numeric: true });
+  return displayName(a).localeCompare(displayName(b), undefined, { numeric: true });
+}
+
+/** Entity ID without its domain and without the "_2" Home Assistant adds on collision. */
+function objectId(entity) {
+  return (entity.entity_id || "").split(".").slice(1).join(".").replace(/_\d+$/, "");
+}
+
+/** Whether the entity plays this role. See ROLE for the order identifiers are trusted in. */
+function hasRole(entity, role) {
+  if (entity.translation_key) return role.keys.includes(entity.translation_key);
+  if (entity.unique_id) return role.uid.some((suffix) => entity.unique_id.endsWith(suffix));
+  const id = objectId(entity);
+  return role.eid.some((suffix) => id.endsWith(suffix));
+}
+
+function isEssential(entity) {
+  return ESSENTIAL_ROLES.some((role) => hasRole(entity, role));
 }
 
 /**
@@ -140,10 +288,14 @@ function entityName(entity, device) {
   const own = entity.name || entity.original_name;
   if (own) return own;
 
-  // No registry name: derive one from the object id, minus the device slug it starts with
-  const objectId = (entity.entity_id || "").split(".").slice(1).join(".");
-  const slug = deviceName(device).toLowerCase().replace(/[^a-z0-9]+/g, "_");
-  const trimmed = objectId.startsWith(`${slug}_`) ? objectId.slice(slug.length + 1) : objectId;
+  // No registry name: derive one from the object id, minus the device slug it starts with. The
+  // ID may predate the device's current name, so the unprefixed forms are tried too
+  const id = objectId(entity);
+  const slugs = [deviceName(device), displayName(device, { dropKind: false }), displayName(device)]
+    .map(slugify)
+    .filter(Boolean);
+  const slug = slugs.find((candidate) => id.startsWith(`${candidate}_`));
+  const trimmed = slug ? id.slice(slug.length + 1) : id;
 
   return trimmed
     .split("_")
@@ -157,7 +309,7 @@ function isButton(entity) {
 }
 
 function orderRank(entity) {
-  const index = ENTITY_ORDER.findIndex((suffix) => (entity.entity_id || "").endsWith(suffix));
+  const index = ENTITY_ORDER.findIndex((role) => hasRole(entity, role));
   return index === -1 ? ENTITY_ORDER.length : index;
 }
 
@@ -174,7 +326,13 @@ function entitiesByDevice(entities, opts) {
     if (entity.platform !== INTEGRATION) continue;
     if (entity.disabled_by) continue;
     if (entity.hidden_by && !opts.include_hidden) continue;
-    if (entity.entity_category === "diagnostic" && !opts.include_diagnostics) continue;
+    if (
+      entity.entity_category === "diagnostic" &&
+      !opts.include_diagnostics &&
+      !isEssential(entity)
+    ) {
+      continue;
+    }
     if (entity.entity_category === "config" && !opts.include_config) continue;
     if (!entity.device_id) continue;
 
@@ -188,7 +346,7 @@ function entitiesByDevice(entities, opts) {
   for (const list of byDevice.values()) {
     list.sort((a, b) => {
       const category = (entity) => {
-        if (entity.entity_category === "diagnostic") return 2;
+        if (entity.entity_category === "diagnostic" && !isEssential(entity)) return 2;
         if (isButton(entity)) return 1;
         return 0;
       };
@@ -231,7 +389,8 @@ function entryLabels(devices) {
   for (const device of devices) {
     if (device.model !== MODEL.SERVER) continue;
     for (const entryId of device.config_entries || []) {
-      labels.set(entryId, deviceName(device));
+      // "VB365 Server veeam.example.com" labels as the host; an old "Veeam Server" as itself
+      labels.set(entryId, displayName(device, { dropKind: true }));
     }
   }
   return labels;
@@ -239,6 +398,15 @@ function entryLabels(devices) {
 
 function entryOf(device) {
   return (device.config_entries || [])[0];
+}
+
+/**
+ * The server label a title needs, if any: only with several servers, and never on the server's
+ * own device, whose name already is the label.
+ */
+function titleLabel(device, labels, multiServer) {
+  if (!multiServer || device.model === MODEL.SERVER) return null;
+  return labels.get(entryOf(device)) || null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -271,9 +439,9 @@ function markdown(content, extra = {}) {
   return { type: "markdown", content, ...extra };
 }
 
-function findBySuffixes(entities, suffixes) {
-  for (const suffix of suffixes || []) {
-    const found = entities.find((entity) => (entity.entity_id || "").endsWith(suffix));
+function findByRoles(entities, roles) {
+  for (const role of roles || []) {
+    const found = entities.find((entity) => hasRole(entity, role));
     if (found) return found;
   }
   return null;
@@ -331,22 +499,22 @@ function licenseSummary(usedId, totalId, warnAt) {
 
 function summarySection(groups, byDevice, opts, columns) {
   // The same entity the tiles use, so the headline can never disagree with what is below it
-  const collect = (model, suffixes) =>
+  const collect = (model, roles) =>
     (groups.get(model) || [])
-      .map((device) => findBySuffixes(byDevice.get(device.id) || [], suffixes))
+      .map((device) => findByRoles(byDevice.get(device.id) || [], roles))
       .filter(Boolean)
       .map((entity) => entity.entity_id);
 
   const jobs = [
-    ...collect(MODEL.JOB, PRIMARY_SUFFIXES[MODEL.JOB]),
-    ...collect(MODEL.COPY_JOB, PRIMARY_SUFFIXES[MODEL.COPY_JOB]),
+    ...collect(MODEL.JOB, PRIMARY_ROLES[MODEL.JOB]),
+    ...collect(MODEL.COPY_JOB, PRIMARY_ROLES[MODEL.COPY_JOB]),
   ];
 
   const licenseEntities = (groups.get(MODEL.LICENSE) || []).flatMap(
     (device) => byDevice.get(device.id) || [],
   );
-  const used = findBySuffixes(licenseEntities, ["_license_used_number"]);
-  const total = findBySuffixes(licenseEntities, ["_license_total_number"]);
+  const used = findByRoles(licenseEntities, [ROLE.LICENSE_USED]);
+  const total = findByRoles(licenseEntities, [ROLE.LICENSE_TOTAL]);
 
   const parts = [];
   if (jobs.length) parts.push(jobSummary(jobs));
@@ -366,8 +534,8 @@ function summarySection(groups, byDevice, opts, columns) {
 function deviceSections(devices, byDevice, labels, multiServer) {
   return devices.map((device) => {
     const entities = byDevice.get(device.id) || [];
-    const label = multiServer ? labels.get(entryOf(device)) : null;
-    const title = label ? `${deviceName(device)} — ${label}` : deviceName(device);
+    const label = titleLabel(device, labels, multiServer);
+    const title = label ? `${displayName(device)} — ${label}` : displayName(device);
 
     const cards = entities.map((entity) => {
       const name = entityName(entity, device);
@@ -404,14 +572,13 @@ function overviewSections(groups, byDevice, labels, multiServer, opts, columns) 
     for (const device of devices) {
       const entities = byDevice.get(device.id) || [];
       const primary =
-        findBySuffixes(entities, PRIMARY_SUFFIXES[model]) ||
-        entities.find((entity) => !isButton(entity));
+        findByRoles(entities, PRIMARY_ROLES[model]) || entities.find((entity) => !isButton(entity));
       if (!primary) continue;
 
-      const label = multiServer ? labels.get(entryOf(device)) : null;
+      const label = titleLabel(device, labels, multiServer);
       cards.push(
         tile(primary.entity_id, {
-          name: label ? `${deviceName(device)} (${label})` : deviceName(device),
+          name: label ? `${displayName(device)} (${label})` : displayName(device),
         }),
       );
     }
@@ -431,8 +598,8 @@ function overviewBadges(groups, byDevice, labels, multiServer) {
   for (const model of PLATFORM_MODELS) {
     for (const device of groups.get(model) || []) {
       const entities = byDevice.get(device.id) || [];
-      for (const suffix of BADGE_SUFFIXES[model] || []) {
-        const entity = entities.find((candidate) => candidate.entity_id.endsWith(suffix));
+      for (const role of BADGE_ROLES[model] || []) {
+        const entity = entities.find((candidate) => hasRole(candidate, role));
         if (!entity) continue;
 
         const label = multiServer ? labels.get(entryOf(device)) : null;
