@@ -42,7 +42,14 @@ function entity(entityId, deviceId, originalName = null, extra = {}) {
   };
 }
 
-/** A registry set covering every device model the integration creates. */
+const DIAGNOSTIC = { entity_category: "diagnostic" };
+
+/**
+ * An install from before the VB365 device prefix and translation keys: device names are the
+ * bare job names plus "Veeam Server"/"Veeam License", entity IDs come from the old English
+ * entity names, and the registry carries no translation keys. Entity categories are the
+ * integration's own — Connected, the license counts and the repository flags are diagnostic.
+ */
 function registries() {
   return {
     devices: [
@@ -63,20 +70,24 @@ function registries() {
       entity("button.exchange_online_start", "job-1", "Start", { entity_category: "config" }),
       entity("sensor.sharepoint_last_status", "job-2", "Last Status"),
       entity("sensor.exchange_online_copy_last_status", "copy-1", "Last Status"),
-      entity("binary_sensor.default_backup_repository_online", "repo-1", "Online"),
+      entity("binary_sensor.default_backup_repository_online", "repo-1", "Online", DIAGNOSTIC),
       entity("sensor.default_backup_repository_used_space", "repo-1", "Used Space"),
-      entity("binary_sensor.default_backup_repository_accessible", "repo-1", "Accessible"),
+      entity(
+        "binary_sensor.default_backup_repository_accessible",
+        "repo-1",
+        "Accessible",
+        DIAGNOSTIC,
+      ),
       entity("button.default_backup_repository_rescan", "repo-1", "Synchronize Cache", {
         entity_category: "config",
       }),
-      entity("binary_sensor.veeam_server_connected", "server-1", "Connected"),
-      entity("sensor.veeam_server_version", "server-1", "Product Version", {
-        entity_category: "diagnostic",
-      }),
+      entity("binary_sensor.veeam_server_connected", "server-1", "Connected", DIAGNOSTIC),
+      entity("sensor.veeam_server_product_version", "server-1", "Product Version", DIAGNOSTIC),
       entity("sensor.veeam_license_status", "license-1", "Status"),
-      entity("sensor.veeam_license_expiration", "license-1", "Expiration Date"),
-      entity("sensor.veeam_license_used_number", "license-1", "Used Licenses"),
-      entity("sensor.veeam_license_total_number", "license-1", "Total Licenses"),
+      entity("sensor.veeam_license_expiration_date", "license-1", "Expiration Date"),
+      entity("sensor.veeam_license_used_licenses", "license-1", "Used Licenses", DIAGNOSTIC),
+      entity("sensor.veeam_license_total_licenses", "license-1", "Total Licenses", DIAGNOSTIC),
+      entity("sensor.veeam_license_licensed_to", "license-1", "Licensed To", DIAGNOSTIC),
     ],
   };
 }
@@ -194,12 +205,13 @@ test("copy jobs get their own section rather than mixing in with backup jobs", (
   assert.ok(titles.includes("Backup copy jobs"), `got ${JSON.stringify(titles)}`);
 });
 
-test("the overview leads a repository with its Online sensor", () => {
+test("the overview leads a repository with its Accessible sensor", () => {
+  // "Online" only ever reported whether the cache was in sync — it is not reachability
   const repos = sectionByHeading(buildSections("overview", registries(), {}), "Repositories");
 
-  assert.ok(
-    repos.cards.filter((c) => c.entity).every((c) => c.entity.endsWith("_online")),
-    "reachability is what matters at a glance",
+  assert.deepEqual(
+    repos.cards.filter((c) => c.entity).map((c) => c.entity),
+    ["binary_sensor.default_backup_repository_accessible"],
   );
 });
 
@@ -293,8 +305,8 @@ test("copy jobs are counted in the headline too", () => {
 test("license usage is summarised, since VB365 licenses per user", () => {
   const content = markdownIn(buildSections("overview", registries(), {}))[0];
 
-  assert.match(content, /sensor\.veeam_license_used_number/);
-  assert.match(content, /sensor\.veeam_license_total_number/);
+  assert.match(content, /sensor\.veeam_license_used_licenses/);
+  assert.match(content, /sensor\.veeam_license_total_licenses/);
 });
 
 test("the license threshold reaches the summary", () => {
@@ -650,4 +662,433 @@ test("nothing generated depends on the current state of an entity", () => {
   for (const key of ['"color"', '"state_color"']) {
     assert.ok(!json.includes(key), `${key} would freeze a live state into the config`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Naming schemes
+//
+// The integration now names devices "VB365 <Kind> <name>" and entities by translation key.
+// Home Assistant keeps the entity IDs it already registered, so an install that updates keeps
+// its old IDs under the new device names, while a new install gets IDs built from both.
+// ---------------------------------------------------------------------------------------------
+
+const HOST = "veeam.example.com";
+
+/** A registry entry as the updated integration leaves it: translation key and unique ID set. */
+function keyed(entityId, deviceId, name, translationKey, uniqueSuffix, extra = {}) {
+  return entity(entityId, deviceId, name, {
+    translation_key: translationKey,
+    unique_id: `${ENTRY}_${uniqueSuffix}`,
+    ...extra,
+  });
+}
+
+/** A new install: VB365 device names, and entity IDs built from them. */
+function newRegistries() {
+  return {
+    devices: [
+      device("job-1", "VB365 Job Exchange Online", "Backup Job"),
+      device("job-2", "VB365 Daily Mail Job", "Backup Job"),
+      device("copy-1", "VB365 Copy Job Mail Copy", "Backup Copy Job"),
+      device("repo-1", "VB365 Default Backup Repository", "Backup Repository"),
+      device("server-1", `VB365 Server ${HOST}`, "Backup for Microsoft 365"),
+      device("license-1", `VB365 License ${HOST}`, "License"),
+    ],
+    entities: [
+      keyed(
+        "sensor.vb365_job_exchange_online_last_status",
+        "job-1",
+        "Last Status",
+        "job_last_status",
+        "job_j1_last_status",
+      ),
+      keyed(
+        "sensor.vb365_job_exchange_online_last_run",
+        "job-1",
+        "Last Run",
+        "job_last_run",
+        "job_j1_last_run",
+      ),
+      keyed(
+        "sensor.vb365_job_exchange_online_enabled",
+        "job-1",
+        "Enabled",
+        "job_is_enabled",
+        "job_j1_is_enabled",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "button.vb365_job_exchange_online_start",
+        "job-1",
+        "Start",
+        "job_start",
+        "job_j1_start",
+        {
+          entity_category: "config",
+        },
+      ),
+      keyed(
+        "sensor.vb365_daily_mail_job_last_status",
+        "job-2",
+        "Last Status",
+        "job_last_status",
+        "job_j2_last_status",
+      ),
+      keyed(
+        "sensor.vb365_copy_job_mail_copy_last_status",
+        "copy-1",
+        "Last Status",
+        "copy_job_last_status",
+        "copy_job_c1_last_status",
+      ),
+      keyed(
+        "binary_sensor.vb365_default_backup_repository_cache_in_sync",
+        "repo-1",
+        "Cache In Sync",
+        "repository_cache_in_sync",
+        "repository_r1_online",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "binary_sensor.vb365_default_backup_repository_accessible",
+        "repo-1",
+        "Accessible",
+        "repository_accessible",
+        "repository_r1_accessible",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "sensor.vb365_default_backup_repository_used_space",
+        "repo-1",
+        "Used Space",
+        "repository_used_space",
+        "repository_r1_used_space",
+      ),
+      keyed(
+        "binary_sensor.vb365_server_veeam_example_com_connected",
+        "server-1",
+        "Connected",
+        "server_connected",
+        "server_connected",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "sensor.vb365_server_veeam_example_com_product_version",
+        "server-1",
+        "Product Version",
+        "server_version",
+        "server_version",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "sensor.vb365_license_veeam_example_com_status",
+        "license-1",
+        "Status",
+        "license_status",
+        "license_status",
+      ),
+      keyed(
+        "sensor.vb365_license_veeam_example_com_expiration_date",
+        "license-1",
+        "Expiration Date",
+        "license_expiration",
+        "license_expiration",
+      ),
+      keyed(
+        "sensor.vb365_license_veeam_example_com_used_licenses",
+        "license-1",
+        "Used Licenses",
+        "license_used_number",
+        "license_used_number",
+        DIAGNOSTIC,
+      ),
+      keyed(
+        "sensor.vb365_license_veeam_example_com_total_licenses",
+        "license-1",
+        "Total Licenses",
+        "license_total_number",
+        "license_total_number",
+        DIAGNOSTIC,
+      ),
+    ],
+  };
+}
+
+/**
+ * An existing install after updating the integration: IDs from a live system — "_2" where they
+ * collided with the Backup & Replication integration's "Veeam License" device — under the
+ * renamed devices, with translation keys now set.
+ */
+function upgradedRegistries() {
+  const e = (id, deviceId, name, key, extra) => keyed(id, deviceId, name, key, key, extra);
+  const repo = (id, name, key) =>
+    keyed(id, "repo-1", name, key, key.replace("repository_", "repository_r1_"), DIAGNOSTIC);
+
+  return {
+    devices: [
+      device("repo-1", "VB365 Default Backup Repository", "Backup Repository"),
+      device("server-1", `VB365 Server ${HOST}`, "Backup for Microsoft 365"),
+      device("license-1", `VB365 License ${HOST}`, "License"),
+    ],
+    entities: [
+      keyed(
+        "binary_sensor.default_backup_repository_online",
+        "repo-1",
+        "Cache In Sync",
+        "repository_cache_in_sync",
+        "repository_r1_online",
+        DIAGNOSTIC,
+      ),
+      repo(
+        "binary_sensor.default_backup_repository_accessible",
+        "Accessible",
+        "repository_accessible",
+      ),
+      e(
+        "binary_sensor.veeam_server_health_ok",
+        "server-1",
+        "Health OK",
+        "server_health_ok",
+        DIAGNOSTIC,
+      ),
+      e(
+        "binary_sensor.veeam_server_connected",
+        "server-1",
+        "Connected",
+        "server_connected",
+        DIAGNOSTIC,
+      ),
+      e(
+        "sensor.veeam_server_last_successful_poll",
+        "server-1",
+        "Last Successful Poll",
+        "server_last_successful_poll",
+        DIAGNOSTIC,
+      ),
+      e("sensor.veeam_license_status_2", "license-1", "Status", "license_status"),
+      e("sensor.veeam_license_type_2", "license-1", "Type", "license_type", DIAGNOSTIC),
+      e(
+        "sensor.veeam_license_expiration_date_2",
+        "license-1",
+        "Expiration Date",
+        "license_expiration",
+      ),
+      e(
+        "sensor.veeam_license_grace_period_expiration",
+        "license-1",
+        "Grace Period Expiration",
+        "license_grace_period_expires",
+      ),
+      e(
+        "sensor.veeam_license_licensed_to_2",
+        "license-1",
+        "Licensed To",
+        "license_licensed_to",
+        DIAGNOSTIC,
+      ),
+      e(
+        "sensor.veeam_license_total_licenses",
+        "license-1",
+        "Total Licenses",
+        "license_total_number",
+        DIAGNOSTIC,
+      ),
+      e(
+        "sensor.veeam_license_used_licenses",
+        "license-1",
+        "Used Licenses",
+        "license_used_number",
+        DIAGNOSTIC,
+      ),
+      e(
+        "sensor.veeam_license_new_licenses",
+        "license-1",
+        "New Licenses",
+        "license_new_number",
+        DIAGNOSTIC,
+      ),
+      e(
+        "binary_sensor.veeam_license_auto_update_enabled",
+        "license-1",
+        "Auto Update Enabled",
+        "license_auto_update",
+        DIAGNOSTIC,
+      ),
+    ],
+  };
+}
+
+/** The same registry with nothing but the entity ID to go on. */
+function idsOnly(data) {
+  return {
+    ...data,
+    entities: data.entities.map((e) => ({ ...e, translation_key: null, unique_id: null })),
+  };
+}
+
+function tileIds(section) {
+  return section.cards.filter((c) => c.entity).map((c) => c.entity);
+}
+
+test("new install: section titles drop the VB365 prefix and the redundant kind", () => {
+  assert.deepEqual(headings(buildSections("jobs", newRegistries(), {})), [
+    "Daily Mail Job",
+    "Exchange Online",
+    "Mail Copy",
+  ]);
+  assert.deepEqual(headings(buildSections("repositories", newRegistries(), {})), [
+    "Default Backup Repository",
+  ]);
+});
+
+test("new install: overview tiles are named like the sections", () => {
+  const jobs = sectionByHeading(buildSections("overview", newRegistries(), {}), "Backup jobs");
+
+  assert.deepEqual(
+    jobs.cards.filter((c) => c.entity).map((c) => c.name),
+    ["Daily Mail Job", "Exchange Online"],
+  );
+});
+
+test("new install: servers and licenses keep their kind, or both would read as the host", () => {
+  assert.deepEqual(headings(buildSections("infrastructure", newRegistries(), {})), [
+    `Server ${HOST}`,
+    `License ${HOST}`,
+  ]);
+});
+
+test("new install: the overview finds each device's headline entity", () => {
+  const sections = buildSections("overview", newRegistries(), {});
+
+  assert.deepEqual(tileIds(sectionByHeading(sections, "Backup jobs")), [
+    "sensor.vb365_daily_mail_job_last_status",
+    "sensor.vb365_job_exchange_online_last_status",
+  ]);
+  assert.deepEqual(tileIds(sectionByHeading(sections, "Repositories")), [
+    "binary_sensor.vb365_default_backup_repository_accessible",
+  ]);
+});
+
+test("new install: badges and the license headline are found", () => {
+  const view = buildView("overview", newRegistries(), {});
+  const content = markdownIn(view.sections)[0];
+
+  assert.deepEqual(
+    view.badges.map((b) => b.entity),
+    [
+      "binary_sensor.vb365_server_veeam_example_com_connected",
+      "sensor.vb365_license_veeam_example_com_status",
+      "sensor.vb365_license_veeam_example_com_expiration_date",
+    ],
+  );
+  assert.match(content, /sensor\.vb365_license_veeam_example_com_used_licenses/);
+  assert.match(content, /sensor\.vb365_license_veeam_example_com_total_licenses/);
+});
+
+test("new install: an entity with no registry name loses the device slug", () => {
+  const data = newRegistries();
+  data.entities[0].original_name = null;
+
+  const section = sectionByHeading(buildSections("jobs", data, {}), "Exchange Online");
+
+  assert.equal(section.cards.find((c) => c.entity).name, "Last Status");
+});
+
+for (const [label, build] of [
+  ["upgraded install", upgradedRegistries],
+  ["upgraded install, entity IDs only", () => idsOnly(upgradedRegistries())],
+]) {
+  test(`${label}: badges survive the "_2" collision suffix`, () => {
+    const view = buildView("overview", build(), {});
+
+    assert.deepEqual(
+      view.badges.map((b) => b.entity),
+      [
+        "binary_sensor.veeam_server_connected",
+        "sensor.veeam_license_status_2",
+        "sensor.veeam_license_expiration_date_2",
+      ],
+    );
+  });
+
+  test(`${label}: license usage reaches the headline`, () => {
+    const content = markdownIn(buildSections("overview", build(), {}))[0];
+
+    assert.match(content, /states\('sensor\.veeam_license_used_licenses'\)/);
+    assert.match(content, /states\('sensor\.veeam_license_total_licenses'\)/);
+    assert.doesNotMatch(content, /new_licenses/);
+  });
+
+  test(`${label}: the repository leads with Accessible, not the old "Online" ID`, () => {
+    const repos = sectionByHeading(buildSections("overview", build(), {}), "Repositories");
+
+    assert.deepEqual(tileIds(repos), ["binary_sensor.default_backup_repository_accessible"]);
+  });
+}
+
+test("the translation key decides over a misleading entity ID", () => {
+  // An entity ID can be renamed to anything; the translation key still says what it is
+  const data = upgradedRegistries();
+  data.entities.find((e) => e.translation_key === "repository_accessible").entity_id =
+    "binary_sensor.repo_reachable";
+  data.entities.find((e) => e.translation_key === "repository_cache_in_sync").entity_id =
+    "binary_sensor.default_backup_repository_accessible";
+
+  const repos = sectionByHeading(buildSections("overview", data, {}), "Repositories");
+
+  assert.deepEqual(tileIds(repos), ["binary_sensor.repo_reachable"]);
+});
+
+test("the unique ID is used when there is no translation key", () => {
+  // As on an install that has not updated the integration yet, with renamed entity IDs
+  const data = upgradedRegistries();
+  for (const e of data.entities) {
+    e.translation_key = null;
+    e.entity_id = `${e.entity_id.split(".")[0]}.renamed_${e.entity_id.length}`;
+  }
+  const connected = data.entities.find((e) => e.unique_id === `${ENTRY}_server_connected`);
+
+  const view = buildView("overview", data, {});
+
+  assert.equal(view.badges[0].entity, connected.entity_id);
+});
+
+test("with several servers, labels are the host", () => {
+  const data = newRegistries();
+  data.devices.push(
+    device("server-2", "VB365 Server backup2.example.com", "Backup for Microsoft 365", ENTRY_2),
+    device("job-9", "VB365 Job Exchange Online", "Backup Job", ENTRY_2),
+  );
+  data.entities.push(
+    entity("binary_sensor.vb365_server_backup2_example_com_connected", "server-2", "Connected", {
+      translation_key: "server_connected",
+      ...DIAGNOSTIC,
+    }),
+    entity("sensor.vb365_job_exchange_online_last_status_2", "job-9", "Last Status", {
+      translation_key: "job_last_status",
+    }),
+  );
+
+  const titles = headings(buildSections("jobs", data, {}));
+  const infra = headings(buildSections("infrastructure", data, {}));
+
+  assert.ok(titles.includes(`Exchange Online — ${HOST}`), `got ${JSON.stringify(titles)}`);
+  assert.ok(titles.includes("Exchange Online — backup2.example.com"));
+  assert.ok(infra.includes(`Server ${HOST}`), "a server's own title needs no label");
+});
+
+test("headline entities filed as diagnostic still appear, other diagnostics do not", () => {
+  const ids = entityIdsIn(buildSections("infrastructure", upgradedRegistries(), {}));
+
+  assert.ok(ids.includes("binary_sensor.veeam_server_connected"));
+  assert.ok(ids.includes("sensor.veeam_license_used_licenses"));
+  assert.ok(!ids.includes("sensor.veeam_license_type_2"));
+  assert.ok(!ids.includes("binary_sensor.veeam_server_health_ok"));
+});
+
+test("a name the user gave a device is shown as given", () => {
+  const data = newRegistries();
+  data.devices[0].name_by_user = "VB365 Job Exchange (prod)";
+
+  assert.ok(headings(buildSections("jobs", data, {})).includes("VB365 Job Exchange (prod)"));
 });

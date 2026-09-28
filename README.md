@@ -116,7 +116,7 @@ All optional, and valid on either the dashboard or a view strategy:
 | `summary` | `true` | The live headline counting failed jobs and licence usage |
 | `badges` | `true` | Show server and licence state as badges instead of tiles |
 | `columns` | `3` | Maximum section columns |
-| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, installation IDs |
+| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, installation IDs. The few the layout is built around (server Connected, license counts, repository Accessible) are shown either way |
 | `include_config` | `true` | Include config entities. The job start/stop buttons live here |
 | `include_hidden` | `false` | Include entities you have hidden |
 | `license_warn_at` | `90` | Percentage of licensed users treated as a warning in the headline |
@@ -132,7 +132,7 @@ strategy:
 ### Multiple Veeam servers
 
 Each server is its own config entry, and all of them are picked up. When more than one is
-configured, section titles are suffixed with the server name — so two jobs both called
+configured, section titles are suffixed with the server's host — so two jobs both called
 `Exchange Online` on different servers stay distinguishable.
 
 ## How it works
@@ -143,7 +143,12 @@ platform is `veeam_365`, and groups their devices by model — `Backup Job`, `Ba
 
 Working from the registry rather than matching entity IDs means renaming an entity or a device
 does not break the dashboard, and disabled entities are never given a tile that would render
-broken. It also means a Home Assistant running both this and the Backup & Replication
+broken. Where the layout needs a particular entity — a job's Last Status, the license counts —
+it identifies it by the translation key the integration sets, then by its unique ID, and only
+failing both by the end of its entity ID (ignoring a `_2` collision suffix). So installs from
+before the integration's device renaming, which keep IDs like `sensor.veeam_license_status_2`
+and `binary_sensor.<repository>_online`, work the same as new ones with
+`sensor.vb365_license_<host>_status` and `binary_sensor.vb365_<repository>_cache_in_sync`. It also means a Home Assistant running both this and the Backup & Replication
 integration gets two independent dashboards rather than one mixed-up one.
 
 A few deliberate choices in the layout:
@@ -151,10 +156,18 @@ A few deliberate choices in the layout:
 - **One tile per device on the overview**, named for the device — a job contributing four tiles
   that all read *Exchange Online* tells you nothing about which is which. The rest of a device's
   entities are on its own section in the Jobs, Repositories or Infrastructure view.
+- **Titles without the VB365 prefix.** The integration names devices `VB365 Job Daily Mail` to
+  keep entity IDs apart from the Backup & Replication integration; under *Backup jobs* that
+  reads *Daily Mail*. Servers and licenses keep their kind — *Server veeam.example.com*,
+  *License veeam.example.com* — since the host alone would not tell them apart. A name you gave
+  a device yourself is shown as you wrote it.
 - **Short names inside a device section.** In a section already titled *Exchange Online*, the
   tiles read *Last Status*, *Last Run*, *Start* — not the full friendly name repeated four
   times.
 - **Jobs lead with Last Status**, which is where VB365 reports the outcome of the last run.
+- **Repositories lead with Accessible**, which is off when VB365 reports the repository as
+  invalid (API v8). *Cache In Sync* — called *Online* in older versions of the integration — only
+  says whether an object storage cache needs synchronizing, so it is not the headline.
 - **Copy jobs get their own section**, because a backup and its copy are separate objects with
   separate outcomes, and mixing them makes a failed copy easy to miss.
 - **Licence usage is in the headline.** VB365 licenses per protected user and picks up new users
