@@ -69,14 +69,15 @@ strategy:
   type: custom:veeam-365
 ```
 
-That's the entire configuration. You get four views:
+That's the entire configuration. You get up to five views:
 
 | View | Contents |
 | ---- | -------- |
-| **Overview** | A live headline, server and licence badges, and one tile per job, copy job and repository |
-| **Jobs** | A section per backup job and backup copy job, with its sensors and start/stop buttons |
-| **Repositories** | A section per backup repository, with its state and cache synchronization button |
-| **Infrastructure** | Server details and licensing |
+| **Overview** | A live headline, server and licence badges, and one tile per organization, job, copy job, repository and proxy |
+| **Organizations** | A section per Microsoft 365 organization: whether it is backed up, what it protects, its licensed users, and its cache sync with a Synchronize button |
+| **Jobs** | A section per backup job and backup copy job, with its sensors, its latest session and start/stop buttons |
+| **Repositories** | A section per backup repository, with its state, maintenance, and cache synchronization and maintenance buttons |
+| **Infrastructure** | Backup proxies, server details and health, and licensing |
 
 Views with nothing to show are left out, so a server with no copy jobs does not get an empty
 tab.
@@ -92,7 +93,7 @@ views:
       icon: mdi:shield-check
 ```
 
-`group` accepts `overview`, `jobs`, `repositories` or `infrastructure`.
+`group` accepts `overview`, `organizations`, `jobs`, `repositories` or `infrastructure`.
 
 > [!IMPORTANT]
 > Set the view's **`title` inside the `strategy:` block**, as above — not beside it.
@@ -113,10 +114,10 @@ All optional, and valid on either the dashboard or a view strategy:
 | Option | Default | What it does |
 | ------ | ------- | ------------ |
 | `title`, `icon`, `path` | per view | Name a generated view. Ignored by the whole-dashboard strategy, which names its own views |
-| `summary` | `true` | The live headline counting failed jobs and licence usage |
+| `summary` | `true` | The live headline counting failed jobs, organizations not backed up and licence usage |
 | `badges` | `true` | Show server and licence state as badges instead of tiles |
 | `columns` | `3` | Maximum section columns |
-| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, installation IDs. The few the layout is built around (server Connected, license counts, repository Accessible) are shown either way |
+| `include_diagnostics` | `false` | Include diagnostic entities — build numbers, IDs, installation IDs. The few the layout is built around (server Connected, Health OK and Service Health, license counts, repository Accessible and Maintenance Status, organization Backed Up and New Users, a job session's processing rate) are shown either way |
 | `include_config` | `true` | Include config entities. The job start/stop buttons live here |
 | `include_hidden` | `false` | Include entities you have hidden |
 | `license_warn_at` | `90` | Percentage of licensed users treated as a warning in the headline |
@@ -138,8 +139,9 @@ configured, section titles are suffixed with the server's host — so two jobs b
 ## How it works
 
 The strategy asks Home Assistant for the device and entity registries, keeps entities whose
-platform is `veeam_365`, and groups their devices by model — `Backup Job`, `Backup Copy Job`,
-`Backup Repository`, `Backup for Microsoft 365`, `License`.
+platform is `veeam_365`, and groups their devices by model — `Microsoft 365 Organization`,
+`Backup Job`, `Backup Copy Job`, `Backup Repository`, `Backup Proxy`, `Backup for Microsoft 365`,
+`License`.
 
 Working from the registry rather than matching entity IDs means renaming an entity or a device
 does not break the dashboard, and disabled entities are never given a tile that would render
@@ -155,7 +157,8 @@ A few deliberate choices in the layout:
 
 - **One tile per device on the overview**, named for the device — a job contributing four tiles
   that all read *Exchange Online* tells you nothing about which is which. The rest of a device's
-  entities are on its own section in the Jobs, Repositories or Infrastructure view.
+  entities are on its own section in the Organizations, Jobs, Repositories or Infrastructure
+  view.
 - **Titles without the VB365 prefix.** The integration names devices `VB365 Job Daily Mail` to
   keep entity IDs apart from the Backup & Replication integration; under *Backup jobs* that
   reads *Daily Mail*. Servers and licenses keep their kind — *Server veeam.example.com*,
@@ -168,6 +171,25 @@ A few deliberate choices in the layout:
 - **Repositories lead with Accessible**, which is off when VB365 reports the repository as
   invalid (API v8). *Cache In Sync* — called *Online* in older versions of the integration — only
   says whether an object storage cache needs synchronizing, so it is not the headline.
+- **Organizations lead with Backed Up**, then Last Backup. An organization with no backup at
+  all is unprotected however well its jobs do, so the headline also counts organizations that
+  are not backed up. Below that, what it protects — users, groups, sites and teams (API v8) —
+  sits in one compact row, followed by licensed and new users, and the cache sync with
+  Microsoft 365 (Sync, Sync Status, Last Sync) next to its **Synchronize** button.
+- **A job's latest session is one row** — duration, data transferred, processed objects and
+  processing rate — under Last Status and Last Session, rather than four more tiles (API v8).
+- **Repository maintenance** (VB365 8.6 and later) shows beside Accessible: the Maintenance
+  flag, the latest maintenance session's status, and Start/Stop Maintenance buttons.
+- **Backup proxies lead with Online**, followed by maintenance mode and CPU and memory usage
+  (API v8). They get a section on the overview and one each in the Infrastructure view.
+- **Server health is on the server's section**: *Health OK* (whether every endpoint answered the
+  last poll) and *Service Health* (the server's own verdict from `/v8/Health`). While either
+  is bad, a note under them says what failed — the failing endpoints, or the server's list of
+  problems — and an organization whose last sync failed shows its error the same way. The notes
+  hide with a live visibility condition, so they come and go without a reload.
+- **Nothing is shown for what a server does not have.** Older VB365 and API versions without
+  organization sync, protected counts, proxy details, job sessions, repository maintenance or
+  the health report get no tiles, rows, notes or sections for them.
 - **Copy jobs get their own section**, because a backup and its copy are separate objects with
   separate outcomes, and mixing them makes a failed copy easy to miss.
 - **Licence usage is in the headline.** VB365 licenses per protected user and picks up new users
@@ -188,7 +210,9 @@ node --test        # or: npm test
 ```
 
 The tests import the module directly and feed it registry fixtures, asserting on the generated
-dashboard configuration — grouping, filtering, multi-server labelling and the empty state.
+dashboard configuration — grouping, filtering, multi-server labelling, the organization, proxy,
+health, maintenance and session layouts under each way of identifying an entity, and the empty
+state.
 
 ## Related
 

@@ -101,7 +101,14 @@ function entityCards(sections) {
 }
 
 function entityIdsIn(sections) {
-  return entityCards(sections).map((c) => c.entity);
+  return [
+    ...entityCards(sections).map((c) => c.entity),
+    ...glancesIn(sections).flatMap((g) => g.entities.map((e) => e.entity)),
+  ];
+}
+
+function glancesIn(sections) {
+  return sections.flatMap((s) => s.cards.filter((c) => c.type === "glance"));
 }
 
 function sectionByHeading(sections, title) {
@@ -1081,9 +1088,10 @@ test("headline entities filed as diagnostic still appear, other diagnostics do n
   const ids = entityIdsIn(buildSections("infrastructure", upgradedRegistries(), {}));
 
   assert.ok(ids.includes("binary_sensor.veeam_server_connected"));
+  assert.ok(ids.includes("binary_sensor.veeam_server_health_ok"), "server health is a headline");
   assert.ok(ids.includes("sensor.veeam_license_used_licenses"));
   assert.ok(!ids.includes("sensor.veeam_license_type_2"));
-  assert.ok(!ids.includes("binary_sensor.veeam_server_health_ok"));
+  assert.ok(!ids.includes("sensor.veeam_server_last_successful_poll"));
 });
 
 test("a name the user gave a device is shown as given", () => {
@@ -1091,4 +1099,581 @@ test("a name the user gave a device is shown as given", () => {
   data.devices[0].name_by_user = "VB365 Job Exchange (prod)";
 
   assert.ok(headings(buildSections("jobs", data, {})).includes("VB365 Job Exchange (prod)"));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Organizations, proxies, server health, repository maintenance and job sessions
+//
+// Entities the integration added in 0.4: they only exist on new-style devices, so the fixture
+// uses VB365 device names and the entity IDs a live install gives them. Each layout is also
+// checked with only the unique ID and with only the entity ID to go on.
+// ---------------------------------------------------------------------------------------------
+
+const ORG = "vb365_organization_mayfamily512_onmicrosoft_com";
+const ORG_NAME = "mayfamily512.onmicrosoft.com";
+const PROXY = "vb365_proxy_proxy01_example_com";
+const JOB = "vb365_job_main_org_backup";
+const COPY = "vb365_main_org_backup_copy_job";
+const REPO = "vb365_repository_main";
+const SERVER = "vb365_server_veeam_example_com";
+const CONFIG = { entity_category: "config" };
+
+function id(domain, slug, suffix) {
+  return `${domain}.${slug}_${suffix}`;
+}
+
+/** A new-style entity: `key` is the translation key, `uid` the integration's unique ID suffix. */
+function feature(domain, slug, suffix, deviceId, name, key, uid, extra = {}) {
+  return keyed(id(domain, slug, suffix), deviceId, name, key, uid, extra);
+}
+
+/** The latest-session sensors a job or copy job gets on API v8. */
+function sessionEntities(slug, deviceId, prefix) {
+  const s = (suffix, name, extra) =>
+    feature("sensor", slug, suffix, deviceId, name, `job_${suffix}`, `${prefix}_${suffix}`, extra);
+  return [
+    s("last_session", "Last Session"),
+    s("last_session_duration", "Last Session Duration"),
+    s("last_session_transferred", "Last Session Transferred"),
+    s("last_session_processed_objects", "Last Session Processed Objects"),
+    s("last_session_processing_rate", "Last Session Processing Rate", DIAGNOSTIC),
+  ];
+}
+
+function featureRegistries({ organizations = true, proxies = true, sessions = true } = {}) {
+  const devices = [
+    device("job-1", "VB365 Job Main Org Backup", "Backup Job"),
+    device("copy-1", "VB365 Main Org Backup Copy Job", "Backup Copy Job"),
+    device("repo-1", "VB365 Repository Main", "Backup Repository"),
+    device("server-1", `VB365 Server ${HOST}`, "Backup for Microsoft 365"),
+  ];
+
+  const job = (domain, suffix, name, key, extra) =>
+    feature(domain, JOB, suffix, "job-1", name, key, `job_j1_${suffix}`, extra);
+  const repo = (domain, suffix, name, key, uid, extra) =>
+    feature(domain, REPO, suffix, "repo-1", name, key, `repository_r1_${uid}`, extra);
+  const server = (domain, suffix, name, key) =>
+    feature(domain, SERVER, suffix, "server-1", name, key, key, DIAGNOSTIC);
+  const org = (domain, suffix, name, extra) =>
+    feature(
+      domain,
+      ORG,
+      suffix,
+      "org-1",
+      name,
+      `organization_${suffix}`,
+      `organization_o1_${suffix}`,
+      extra,
+    );
+  const proxy = (domain, suffix, name, extra) =>
+    feature(domain, PROXY, suffix, "proxy-1", name, `proxy_${suffix}`, `proxy_p1_${suffix}`, extra);
+
+  const entities = [
+    job("sensor", "last_status", "Last Status", "job_last_status"),
+    job("sensor", "last_run", "Last Run", "job_last_run"),
+    job("sensor", "next_run", "Next Run", "job_next_run"),
+    job("button", "start", "Start", "job_start", CONFIG),
+    feature(
+      "sensor",
+      COPY,
+      "last_status",
+      "copy-1",
+      "Last Status",
+      "copy_job_last_status",
+      "copy_job_c1_last_status",
+    ),
+    repo(
+      "binary_sensor",
+      "accessible",
+      "Accessible",
+      "repository_accessible",
+      "accessible",
+      DIAGNOSTIC,
+    ),
+    repo(
+      "binary_sensor",
+      "cache_in_sync",
+      "Cache In Sync",
+      "repository_cache_in_sync",
+      "online",
+      DIAGNOSTIC,
+    ),
+    repo("sensor", "used_space", "Used Space", "repository_used_space", "used_space"),
+    repo("binary_sensor", "maintenance", "Maintenance", "repository_maintenance", "maintenance"),
+    repo(
+      "sensor",
+      "maintenance_status",
+      "Maintenance Status",
+      "repository_maintenance_status",
+      "maintenance_status",
+      DIAGNOSTIC,
+    ),
+    repo("button", "synchronize_cache", "Synchronize Cache", "repository_rescan", "rescan", CONFIG),
+    repo(
+      "button",
+      "start_maintenance",
+      "Start Maintenance",
+      "repository_start_maintenance",
+      "start_maintenance",
+      CONFIG,
+    ),
+    repo(
+      "button",
+      "stop_maintenance",
+      "Stop Maintenance",
+      "repository_stop_maintenance",
+      "stop_maintenance",
+      CONFIG,
+    ),
+    server("binary_sensor", "connected", "Connected", "server_connected"),
+    server("binary_sensor", "health_ok", "Health OK", "server_health_ok"),
+    server("binary_sensor", "service_health", "Service Health", "service_health"),
+    server("sensor", "product_version", "Product Version", "server_version"),
+    server("sensor", "last_successful_poll", "Last Successful Poll", "server_last_successful_poll"),
+  ];
+
+  if (sessions) {
+    entities.push(
+      ...sessionEntities(JOB, "job-1", "job_j1"),
+      ...sessionEntities(COPY, "copy-1", "copy_job_c1"),
+    );
+  }
+
+  if (organizations) {
+    devices.push(device("org-1", `VB365 Organization ${ORG_NAME}`, "Microsoft 365 Organization"));
+    entities.push(
+      org("binary_sensor", "backed_up", "Backed Up", DIAGNOSTIC),
+      org("sensor", "last_backup", "Last Backup"),
+      org("sensor", "licensed_users", "Licensed Users"),
+      org("sensor", "new_users", "New Users", DIAGNOSTIC),
+      org("sensor", "type", "Type", DIAGNOSTIC),
+      org("sensor", "region", "Region", DIAGNOSTIC),
+      org("sensor", "last_sync", "Last Sync"),
+      org("sensor", "sync_status", "Sync Status"),
+      org("binary_sensor", "sync", "Sync"),
+      org("sensor", "protected_users", "Protected Users"),
+      org("sensor", "protected_groups", "Protected Groups"),
+      org("sensor", "protected_sites", "Protected Sites"),
+      org("sensor", "protected_teams", "Protected Teams"),
+      org("button", "synchronize", "Synchronize", CONFIG),
+    );
+  }
+
+  if (proxies) {
+    devices.push(device("proxy-1", "VB365 Proxy proxy01.example.com", "Backup Proxy"));
+    entities.push(
+      proxy("binary_sensor", "online", "Online"),
+      proxy("sensor", "maintenance_mode", "Maintenance Mode"),
+      proxy("sensor", "cpu_usage", "CPU Usage"),
+      proxy("sensor", "memory_usage", "Memory Usage"),
+      proxy("sensor", "version", "Version", DIAGNOSTIC),
+      proxy("sensor", "operating_system", "Operating System", DIAGNOSTIC),
+    );
+  }
+
+  return { devices, entities };
+}
+
+/** The same registry as an install that reports unique IDs but no translation keys. */
+function uniqueIdsOnly(data) {
+  return {
+    ...data,
+    entities: data.entities.map((e) => ({
+      ...e,
+      translation_key: null,
+      // Renamed, so nothing can come from the entity ID
+      entity_id: `${e.entity_id.split(".")[0]}.renamed_${data.entities.indexOf(e)}`,
+    })),
+  };
+}
+
+function cardsOf(section) {
+  return section.cards.filter((c) => c.type !== "heading");
+}
+
+const SCHEMES = [
+  ["translation keys", (data) => data],
+  ["unique IDs only", uniqueIdsOnly],
+  ["entity IDs only", idsOnly],
+];
+
+/** A card list as [kind, entity IDs], in the fixture's own IDs so assertions read the same. */
+function layout(section, toOriginal) {
+  return cardsOf(section).map((c) => {
+    if (c.type === "glance") return ["glance", c.entities.map((e) => toOriginal(e.entity))];
+    if (c.type === "markdown") return ["markdown"];
+    return [c.type, toOriginal(c.entity)];
+  });
+}
+
+for (const [scheme, convert] of SCHEMES) {
+  const build = (options) => {
+    const data = featureRegistries(options);
+    const converted = convert(data);
+    const back = new Map(
+      converted.entities.map((e, i) => [e.entity_id, data.entities[i].entity_id]),
+    );
+    return { data: converted, toOriginal: (entityId) => back.get(entityId) || entityId };
+  };
+
+  test(`${scheme}: an organization's card leads with its backup, then counts, then sync`, () => {
+    const { data, toOriginal } = build();
+    const org = sectionByHeading(buildSections("organizations", data, {}), ORG_NAME);
+
+    assert.ok(org, "the section is titled with the organization, without VB365 Organization");
+    assert.deepEqual(layout(org, toOriginal), [
+      ["tile", id("binary_sensor", ORG, "backed_up")],
+      ["tile", id("sensor", ORG, "last_backup")],
+      [
+        "glance",
+        [
+          id("sensor", ORG, "protected_users"),
+          id("sensor", ORG, "protected_groups"),
+          id("sensor", ORG, "protected_sites"),
+          id("sensor", ORG, "protected_teams"),
+        ],
+      ],
+      ["tile", id("sensor", ORG, "licensed_users")],
+      ["tile", id("sensor", ORG, "new_users")],
+      ["tile", id("binary_sensor", ORG, "sync")],
+      ["tile", id("sensor", ORG, "sync_status")],
+      ["tile", id("sensor", ORG, "last_sync")],
+      ["tile", id("button", ORG, "synchronize")],
+      ["markdown"],
+    ]);
+  });
+
+  test(`${scheme}: a job shows its latest session as one compact row`, () => {
+    const { data, toOriginal } = build();
+    const job = sectionByHeading(buildSections("jobs", data, {}), "Main Org Backup");
+
+    assert.deepEqual(layout(job, toOriginal), [
+      ["tile", id("sensor", JOB, "last_status")],
+      ["tile", id("sensor", JOB, "last_session")],
+      [
+        "glance",
+        [
+          id("sensor", JOB, "last_session_duration"),
+          id("sensor", JOB, "last_session_transferred"),
+          id("sensor", JOB, "last_session_processed_objects"),
+          // Filed as diagnostic, but the row is incomplete without it
+          id("sensor", JOB, "last_session_processing_rate"),
+        ],
+      ],
+      ["tile", id("sensor", JOB, "last_run")],
+      ["tile", id("sensor", JOB, "next_run")],
+      ["tile", id("button", JOB, "start")],
+    ]);
+  });
+
+  test(`${scheme}: a copy job gets the same session row`, () => {
+    const { data, toOriginal } = build();
+    const copy = sectionByHeading(buildSections("jobs", data, {}), "Main Org Backup Copy Job");
+    const row = glancesIn([copy])[0];
+
+    assert.ok(row, "expected a session row on the copy job");
+    assert.ok(
+      row.entities
+        .map((e) => toOriginal(e.entity))
+        .includes("sensor.vb365_main_org_backup_copy_job_last_session_transferred"),
+    );
+  });
+
+  test(`${scheme}: a repository shows its maintenance state and controls`, () => {
+    const { data, toOriginal } = build();
+    const repo = sectionByHeading(buildSections("repositories", data, {}), "Main");
+
+    assert.deepEqual(layout(repo, toOriginal), [
+      ["tile", id("binary_sensor", REPO, "accessible")],
+      ["tile", id("binary_sensor", REPO, "maintenance")],
+      ["tile", id("sensor", REPO, "maintenance_status")],
+      ["tile", id("sensor", REPO, "used_space")],
+      ["tile", id("button", REPO, "synchronize_cache")],
+      ["tile", id("button", REPO, "start_maintenance")],
+      ["tile", id("button", REPO, "stop_maintenance")],
+    ]);
+  });
+
+  test(`${scheme}: the server shows its health, and why it is unhealthy`, () => {
+    const { data, toOriginal } = build();
+    const server = sectionByHeading(buildSections("infrastructure", data, {}), `Server ${HOST}`);
+
+    assert.deepEqual(layout(server, toOriginal), [
+      ["tile", id("binary_sensor", SERVER, "connected")],
+      ["tile", id("binary_sensor", SERVER, "health_ok")],
+      ["tile", id("binary_sensor", SERVER, "service_health")],
+      ["tile", id("sensor", SERVER, "product_version")],
+      ["markdown"],
+      ["markdown"],
+    ]);
+  });
+
+  test(`${scheme}: a proxy leads with Online, on the overview and in infrastructure`, () => {
+    const { data, toOriginal } = build();
+    const overview = sectionByHeading(buildSections("overview", data, {}), "Backup proxies");
+    const proxy = sectionByHeading(
+      buildSections("infrastructure", data, {}),
+      "proxy01.example.com",
+    );
+
+    assert.deepEqual(layout(overview, toOriginal), [
+      ["tile", id("binary_sensor", PROXY, "online")],
+    ]);
+    assert.deepEqual(layout(proxy, toOriginal), [
+      ["tile", id("binary_sensor", PROXY, "online")],
+      ["tile", id("sensor", PROXY, "maintenance_mode")],
+      ["tile", id("sensor", PROXY, "cpu_usage")],
+      ["tile", id("sensor", PROXY, "memory_usage")],
+    ]);
+  });
+
+  test(`${scheme}: the headline counts organizations not backed up`, () => {
+    const { data } = build();
+    const content = markdownIn(buildSections("overview", data, {}))[0];
+    const backedUp = data.entities.find((e) => e.original_name === "Backed Up").entity_id;
+
+    assert.ok(content.includes(`'${backedUp}'`), "the template has to name the entity");
+    assert.match(content, /select\('eq', 'off'\)/);
+    assert.match(content, /not backed up/);
+  });
+}
+
+test("the organization view comes right after the overview", () => {
+  assert.deepEqual(
+    buildDashboard(featureRegistries(), {}).views.map((v) => v.path),
+    ["overview", "organizations", "jobs", "repositories", "infrastructure"],
+  );
+});
+
+test("the overview has one tile per organization, named for it, leading with Backed Up", () => {
+  const sections = buildSections("overview", featureRegistries(), {});
+  const orgs = sectionByHeading(sections, "Organizations");
+
+  assert.deepEqual(
+    cardsOf(orgs).map((c) => [c.entity, c.name]),
+    [[id("binary_sensor", ORG, "backed_up"), ORG_NAME]],
+  );
+  assert.equal(headings(sections)[0], "Organizations", "what is protected comes first");
+});
+
+test("organization type and region are diagnostics, shown only when asked for", () => {
+  const hidden = entityIdsIn(buildSections("organizations", featureRegistries(), {}));
+  const shown = entityIdsIn(
+    buildSections("organizations", featureRegistries(), { include_diagnostics: true }),
+  );
+
+  assert.ok(!hidden.includes(id("sensor", ORG, "type")));
+  assert.ok(!hidden.includes(id("sensor", ORG, "region")));
+  assert.ok(shown.includes(id("sensor", ORG, "type")));
+  assert.ok(shown.includes(id("sensor", ORG, "region")));
+});
+
+test("proxy version and operating system are diagnostics, shown only when asked for", () => {
+  const hidden = entityIdsIn(buildSections("infrastructure", featureRegistries(), {}));
+  const shown = entityIdsIn(
+    buildSections("infrastructure", featureRegistries(), { include_diagnostics: true }),
+  );
+
+  assert.ok(!hidden.includes(id("sensor", PROXY, "version")));
+  assert.ok(shown.includes(id("sensor", PROXY, "version")));
+  assert.ok(shown.includes(id("sensor", PROXY, "operating_system")));
+});
+
+test("rows name their figures briefly, and keep a name the user gave", () => {
+  const data = featureRegistries();
+  data.entities.find((e) => e.translation_key === "organization_protected_teams").name =
+    "Teams (all)";
+
+  const org = sectionByHeading(buildSections("organizations", data, {}), ORG_NAME);
+  const job = sectionByHeading(buildSections("jobs", data, {}), "Main Org Backup");
+  const row = glancesIn([org])[0];
+
+  assert.equal(row.title, "Protected");
+  assert.deepEqual(
+    row.entities.map((e) => e.name),
+    ["Users", "Groups", "Sites", "Teams (all)"],
+  );
+  assert.equal(glancesIn([job])[0].title, "Last session");
+  assert.deepEqual(
+    glancesIn([job])[0].entities.map((e) => e.name),
+    ["Duration", "Transferred", "Objects", "Rate"],
+  );
+});
+
+test("a row shows what there is when some of its figures are missing", () => {
+  const data = featureRegistries();
+  const missing = ["organization_protected_sites", "organization_protected_teams"];
+  data.entities = data.entities.filter((e) => !missing.includes(e.translation_key));
+
+  const org = sectionByHeading(buildSections("organizations", data, {}), ORG_NAME);
+
+  assert.deepEqual(
+    glancesIn([org])[0].entities.map((e) => e.name),
+    ["Users", "Groups"],
+  );
+});
+
+test("the organization's sync error is shown only while the sync is failing", () => {
+  const org = sectionByHeading(buildSections("organizations", featureRegistries(), {}), ORG_NAME);
+  const note = org.cards.find((c) => c.type === "markdown");
+  const sync = id("binary_sensor", ORG, "sync");
+
+  // Sync is a Problem sensor: on means the last sync failed
+  assert.deepEqual(note.visibility, [{ condition: "state", entity: sync, state: "on" }]);
+  assert.ok(note.content.includes(`state_attr('${sync}', 'error')`));
+});
+
+test("server health notes name what failed, and only show while it is failing", () => {
+  const server = sectionByHeading(
+    buildSections("infrastructure", featureRegistries(), {}),
+    `Server ${HOST}`,
+  );
+  const [endpoints, service] = server.cards.filter((c) => c.type === "markdown");
+  const healthOk = id("binary_sensor", SERVER, "health_ok");
+  const serviceHealth = id("binary_sensor", SERVER, "service_health");
+
+  assert.deepEqual(endpoints.visibility, [{ condition: "state", entity: healthOk, state: "off" }]);
+  assert.match(endpoints.content, /'failed_endpoints'/);
+  // Service Health is a Problem sensor: on means unhealthy
+  assert.deepEqual(service.visibility, [
+    { condition: "state", entity: serviceHealth, state: "on" },
+  ]);
+  assert.match(service.content, /'problems'/);
+});
+
+test("the infrastructure view lists proxies before the server", () => {
+  assert.deepEqual(headings(buildSections("infrastructure", featureRegistries(), {})), [
+    "proxy01.example.com",
+    `Server ${HOST}`,
+  ]);
+});
+
+test("with only organizations reporting, the headline still reports them", () => {
+  const data = featureRegistries();
+  data.devices = data.devices.filter((d) => d.id === "org-1");
+  data.entities = data.entities.filter((e) => e.device_id === "org-1");
+
+  const content = markdownIn(buildSections("overview", data, {}))[0];
+
+  assert.match(content, /not backed up/);
+  assert.doesNotMatch(content, /job/);
+});
+
+// Graceful absence: older VB365 versions, or installs without these objects
+
+test("without organizations there is no organization view, section or headline line", () => {
+  const data = featureRegistries({ organizations: false });
+  const overview = buildSections("overview", data, {});
+
+  assert.ok(!buildDashboard(data, {}).views.some((v) => v.path === "organizations"));
+  assert.ok(!headings(overview).includes("Organizations"));
+  assert.doesNotMatch(markdownIn(overview)[0], /organization/);
+  assert.equal(buildSections("organizations", registries(), {}).length, 0);
+});
+
+test("without proxies there is no proxy section", () => {
+  const data = featureRegistries({ proxies: false });
+
+  assert.ok(!headings(buildSections("overview", data, {})).includes("Backup proxies"));
+  assert.deepEqual(headings(buildSections("infrastructure", data, {})), [`Server ${HOST}`]);
+});
+
+test("without session sensors a job card has no session row", () => {
+  const data = featureRegistries({ sessions: false });
+
+  assert.equal(glancesIn(buildSections("jobs", data, {})).length, 0);
+});
+
+test("an old install gets none of the new sections, rows or notes", () => {
+  const dashboard = buildDashboard(registries(), {});
+  const sections = dashboard.views.flatMap((v) => v.sections);
+
+  assert.deepEqual(
+    dashboard.views.map((v) => v.path),
+    ["overview", "jobs", "repositories", "infrastructure"],
+  );
+  assert.ok(!headings(sections).includes("Organizations"));
+  assert.ok(!headings(sections).includes("Backup proxies"));
+  assert.equal(glancesIn(sections).length, 0);
+  assert.equal(
+    sections.flatMap((s) => s.cards).filter((c) => c.visibility).length,
+    0,
+    "no note for a sensor that does not exist",
+  );
+});
+
+test("a proxy's Online does not make an old repository's cache state essential", () => {
+  // Both end in "_online"; only the proxy's is a headline
+  const data = registries();
+  data.devices.push(device("proxy-1", "VB365 Proxy proxy01", "Backup Proxy"));
+  data.entities.push(entity("binary_sensor.vb365_proxy_proxy01_online", "proxy-1", "Online"));
+
+  const repos = entityIdsIn(buildSections("repositories", data, {}));
+  const proxies = sectionByHeading(buildSections("overview", data, {}), "Backup proxies");
+
+  assert.ok(!repos.includes("binary_sensor.default_backup_repository_online"));
+  assert.deepEqual(tileIds(proxies), ["binary_sensor.vb365_proxy_proxy01_online"]);
+});
+
+test("an organization's Last Sync is not mistaken for its Sync problem sensor", () => {
+  // "_last_sync" ends in "_sync" too; the domain tells them apart
+  const data = idsOnly(featureRegistries());
+  data.entities = data.entities.filter((e) => e.entity_id !== id("binary_sensor", ORG, "sync"));
+
+  const org = sectionByHeading(buildSections("organizations", data, {}), ORG_NAME);
+
+  assert.ok(!org.cards.some((c) => c.type === "markdown"), "no sync note without a Sync sensor");
+});
+
+test("with several servers, organizations and proxies are labelled by host", () => {
+  const HOST_2 = "backup2.example.com";
+  const data = featureRegistries();
+  data.devices.push(
+    device("server-2", `VB365 Server ${HOST_2}`, "Backup for Microsoft 365", ENTRY_2),
+    device("org-2", `VB365 Organization ${ORG_NAME}`, "Microsoft 365 Organization", ENTRY_2),
+    device("proxy-2", "VB365 Proxy proxy01.example.com", "Backup Proxy", ENTRY_2),
+  );
+  data.entities.push(
+    entity("binary_sensor.vb365_server_backup2_example_com_connected", "server-2", "Connected", {
+      translation_key: "server_connected",
+      ...DIAGNOSTIC,
+    }),
+    entity(`binary_sensor.${ORG}_backed_up_2`, "org-2", "Backed Up", {
+      translation_key: "organization_backed_up",
+      ...DIAGNOSTIC,
+    }),
+    entity(`binary_sensor.${PROXY}_online_2`, "proxy-2", "Online", {
+      translation_key: "proxy_online",
+    }),
+  );
+
+  const infra = headings(buildSections("infrastructure", data, {}));
+  const overview = buildSections("overview", data, {});
+  const orgTiles = cardsOf(sectionByHeading(overview, "Organizations")).map((c) => c.name);
+
+  assert.deepEqual(headings(buildSections("organizations", data, {})), [
+    `${ORG_NAME} — ${HOST}`,
+    `${ORG_NAME} — ${HOST_2}`,
+  ]);
+  assert.ok(infra.includes(`proxy01.example.com — ${HOST}`), `got ${JSON.stringify(infra)}`);
+  assert.ok(infra.includes(`proxy01.example.com — ${HOST_2}`));
+  assert.deepEqual(orgTiles, [`${ORG_NAME} (${HOST})`, `${ORG_NAME} (${HOST_2})`]);
+  assert.ok(markdownIn(overview)[0].includes(`'binary_sensor.${ORG}_backed_up_2'`));
+});
+
+test("every row entry names an entity", () => {
+  for (const view of buildDashboard(featureRegistries(), {}).views) {
+    for (const row of glancesIn(view.sections)) {
+      assert.ok(row.entities.length);
+      assert.ok(row.entities.every((e) => e.entity && e.name));
+    }
+  }
+});
+
+test("nothing generated for the new sections depends on current states either", () => {
+  const json = JSON.stringify(buildDashboard(featureRegistries(), {}));
+
+  for (const key of ['"color"', '"state_color"']) {
+    assert.ok(!json.includes(key), `${key} would freeze a live state into the config`);
+  }
 });

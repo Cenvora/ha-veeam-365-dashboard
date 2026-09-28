@@ -16,20 +16,22 @@
  *         title: Backups
  *
  * Options (all optional):
- *   group                 Only for the view strategy: overview | jobs | repositories |
- *                         infrastructure (which covers the servers and licensing). Defaults
- *                         to overview.
+ *   group                 Only for the view strategy: overview | organizations | jobs |
+ *                         repositories | infrastructure (which covers the backup proxies, the
+ *                         servers and licensing). Defaults to overview.
  *   title, icon, path     Name the generated view. A view strategy has to supply these
  *                         itself: Home Assistant applies the generated config over the view's
  *                         own keys, so a title set beside `strategy:` is ignored, and renaming
  *                         a strategy view in the visual editor replaces the strategy with
  *                         static cards. Set them here instead.
- *   summary               Live headline counting failed jobs and license usage. Default true.
+ *   summary               Live headline counting failed jobs, organizations not backed up and
+ *                         license usage. Default true.
  *   badges                Server and license state as badges along the top of the overview
  *                         instead of tiles. Default true.
  *   columns               Maximum section columns. Default 3.
  *   include_diagnostics   Include diagnostic entities. Default false, since they are mostly
- *                         build numbers and IDs.
+ *                         build numbers and IDs. The few the layout is built around are shown
+ *                         either way (see ESSENTIAL_ROLES).
  *   include_config        Include config-category entities. Default true — the job start and
  *                         stop buttons live here.
  *   include_hidden        Include entities the user hid. Default false: hiding something and
@@ -44,15 +46,20 @@ const MODEL = {
   JOB: "Backup Job",
   COPY_JOB: "Backup Copy Job",
   REPOSITORY: "Backup Repository",
+  PROXY: "Backup Proxy",
+  ORGANIZATION: "Microsoft 365 Organization",
   SERVER: "Backup for Microsoft 365",
   LICENSE: "License",
 };
 
 /** Section heading and icon per model, in the order they should appear. */
 const MODEL_DISPLAY = [
+  // What is being protected comes first, then what protects it
+  [MODEL.ORGANIZATION, "Organizations", "mdi:domain"],
   [MODEL.JOB, "Backup jobs", "mdi:backup-restore"],
   [MODEL.COPY_JOB, "Backup copy jobs", "mdi:content-copy"],
   [MODEL.REPOSITORY, "Repositories", "mdi:database"],
+  [MODEL.PROXY, "Backup proxies", "mdi:server-network"],
   [MODEL.SERVER, "Servers", "mdi:server"],
   [MODEL.LICENSE, "Licensing", "mdi:certificate"],
 ];
@@ -64,10 +71,11 @@ const MODEL_ORDER = MODEL_DISPLAY.map(([model]) => model);
 /** Models whose state belongs in the overview badges rather than in a section of its own. */
 const PLATFORM_MODELS = [MODEL.SERVER, MODEL.LICENSE];
 
-const GROUPS = ["overview", "jobs", "repositories", "infrastructure"];
+const GROUPS = ["overview", "organizations", "jobs", "repositories", "infrastructure"];
 
 const GROUP_VIEW = {
   overview: { title: "Overview", path: "overview", icon: "mdi:backup-restore" },
+  organizations: { title: "Organizations", path: "organizations", icon: "mdi:domain" },
   jobs: { title: "Jobs", path: "jobs", icon: "mdi:file-tree" },
   repositories: { title: "Repositories", path: "repositories", icon: "mdi:database" },
   infrastructure: { title: "Infrastructure", path: "infrastructure", icon: "mdi:server" },
@@ -97,6 +105,8 @@ const MODEL_KIND = {
   [MODEL.JOB]: "Job",
   [MODEL.COPY_JOB]: "Copy Job",
   [MODEL.REPOSITORY]: "Repository",
+  [MODEL.PROXY]: "Proxy",
+  [MODEL.ORGANIZATION]: "Organization",
   [MODEL.SERVER]: "Server",
   [MODEL.LICENSE]: "License",
 };
@@ -115,6 +125,14 @@ const MODEL_KIND = {
  *
  * The first identifier the entity actually carries decides; a later one is only a fallback for
  * registries that do not report the earlier one.
+ *
+ *   domain  when set, only entities of that domain qualify. The suffixes alone cannot tell an
+ *           organization's Sync problem sensor ("_sync") from its Last Sync ("_last_sync"), or
+ *           a repository's Maintenance flag from its Start Maintenance button
+ *
+ * Suffixes are shared between models — a proxy's Online and an old repository's "_online" — so
+ * roles are always looked up within one device's entities, and what counts as essential is
+ * decided per model (see ESSENTIAL_ROLES).
  */
 const ROLE = {
   LAST_STATUS: {
@@ -123,7 +141,7 @@ const ROLE = {
     eid: ["_last_status"],
   },
   LAST_BACKUP: {
-    keys: ["job_last_backup", "copy_job_last_backup"],
+    keys: ["job_last_backup", "copy_job_last_backup", "organization_last_backup"],
     uid: ["_last_backup"],
     eid: ["_last_backup"],
   },
@@ -134,6 +152,34 @@ const ROLE = {
     uid: ["_is_enabled"],
     eid: ["_enabled"],
   },
+
+  // A job's or copy job's latest session (API v8). Both kinds share these translation keys
+  LAST_SESSION: { keys: ["job_last_session"], uid: ["_last_session"], eid: ["_last_session"] },
+  SESSION_DURATION: {
+    keys: ["job_last_session_duration"],
+    uid: ["_last_session_duration"],
+    eid: ["_last_session_duration"],
+  },
+  SESSION_TRANSFERRED: {
+    keys: ["job_last_session_transferred"],
+    uid: ["_last_session_transferred"],
+    eid: ["_last_session_transferred"],
+  },
+  SESSION_OBJECTS: {
+    keys: ["job_last_session_processed_objects"],
+    uid: ["_last_session_processed_objects"],
+    eid: ["_last_session_processed_objects"],
+  },
+  SESSION_RATE: {
+    keys: ["job_last_session_processing_rate"],
+    uid: ["_last_session_processing_rate"],
+    eid: ["_last_session_processing_rate"],
+  },
+  JOB_START: { keys: ["job_start", "copy_job_start"], uid: ["_start"], eid: ["_start"] },
+  JOB_STOP: { keys: ["job_stop", "copy_job_stop"], uid: ["_stop"], eid: ["_stop"] },
+  JOB_ENABLE: { keys: ["job_enable", "copy_job_enable"], uid: ["_enable"], eid: ["_enable"] },
+  JOB_DISABLE: { keys: ["job_disable", "copy_job_disable"], uid: ["_disable"], eid: ["_disable"] },
+
   // Reports the repository's Invalid state on API v8; the reachability question
   ACCESSIBLE: { keys: ["repository_accessible"], uid: ["_accessible"], eid: ["_accessible"] },
   // Formerly named "Online", which it never measured. Existing installs keep the "_online" ID
@@ -144,7 +190,116 @@ const ROLE = {
   },
   OUT_OF_DATE: { keys: ["repository_out_of_date"], uid: ["_out_of_date"], eid: ["_out_of_date"] },
   USED_SPACE: { keys: ["repository_used_space"], uid: ["_used_space"], eid: ["_used_space"] },
+  // Repository maintenance sessions (VB365 8.6 and later)
+  MAINTENANCE: {
+    keys: ["repository_maintenance"],
+    uid: ["_maintenance"],
+    eid: ["_maintenance"],
+    domain: "binary_sensor",
+  },
+  MAINTENANCE_STATUS: {
+    keys: ["repository_maintenance_status"],
+    uid: ["_maintenance_status"],
+    eid: ["_maintenance_status"],
+  },
+  RESCAN: { keys: ["repository_rescan"], uid: ["_rescan"], eid: ["_rescan", "_synchronize_cache"] },
+  START_MAINTENANCE: {
+    keys: ["repository_start_maintenance"],
+    uid: ["_start_maintenance"],
+    eid: ["_start_maintenance"],
+  },
+  STOP_MAINTENANCE: {
+    keys: ["repository_stop_maintenance"],
+    uid: ["_stop_maintenance"],
+    eid: ["_stop_maintenance"],
+  },
+
+  // Backup proxies. Maintenance mode, usage, version and OS exist on API v8 only
+  PROXY_ONLINE: {
+    keys: ["proxy_online"],
+    uid: ["_online"],
+    eid: ["_online"],
+    domain: "binary_sensor",
+  },
+  PROXY_MAINTENANCE_MODE: {
+    keys: ["proxy_maintenance_mode"],
+    uid: ["_maintenance_mode"],
+    eid: ["_maintenance_mode"],
+  },
+  PROXY_CPU: { keys: ["proxy_cpu_usage"], uid: ["_cpu_usage"], eid: ["_cpu_usage"] },
+  PROXY_MEMORY: { keys: ["proxy_memory_usage"], uid: ["_memory_usage"], eid: ["_memory_usage"] },
+  PROXY_VERSION: { keys: ["proxy_version"], uid: ["_version"], eid: ["_version"] },
+  PROXY_OS: {
+    keys: ["proxy_operating_system"],
+    uid: ["_operating_system"],
+    eid: ["_operating_system"],
+  },
+
+  // Microsoft 365 organizations. Last Backup is the shared LAST_BACKUP role
+  BACKED_UP: { keys: ["organization_backed_up"], uid: ["_backed_up"], eid: ["_backed_up"] },
+  LICENSED_USERS: {
+    keys: ["organization_licensed_users"],
+    uid: ["_licensed_users"],
+    eid: ["_licensed_users"],
+  },
+  NEW_USERS: { keys: ["organization_new_users"], uid: ["_new_users"], eid: ["_new_users"] },
+  PROTECTED_USERS: {
+    keys: ["organization_protected_users"],
+    uid: ["_protected_users"],
+    eid: ["_protected_users"],
+  },
+  PROTECTED_GROUPS: {
+    keys: ["organization_protected_groups"],
+    uid: ["_protected_groups"],
+    eid: ["_protected_groups"],
+  },
+  PROTECTED_SITES: {
+    keys: ["organization_protected_sites"],
+    uid: ["_protected_sites"],
+    eid: ["_protected_sites"],
+  },
+  PROTECTED_TEAMS: {
+    keys: ["organization_protected_teams"],
+    uid: ["_protected_teams"],
+    eid: ["_protected_teams"],
+  },
+  // Cache sync with Microsoft 365 (API v7 and later): on is a Problem, the last sync failed
+  ORG_SYNC: {
+    keys: ["organization_sync"],
+    uid: ["_sync"],
+    eid: ["_sync"],
+    domain: "binary_sensor",
+  },
+  // Idle, Queued or Running (API v8)
+  SYNC_STATUS: {
+    keys: ["organization_sync_status"],
+    uid: ["_sync_status"],
+    eid: ["_sync_status"],
+  },
+  LAST_SYNC: {
+    keys: ["organization_last_sync"],
+    uid: ["_last_sync"],
+    eid: ["_last_sync"],
+    domain: "sensor",
+  },
+  SYNCHRONIZE: {
+    keys: ["organization_synchronize"],
+    uid: ["_synchronize"],
+    eid: ["_synchronize"],
+    domain: "button",
+  },
+  ORG_TYPE: { keys: ["organization_type"], uid: ["_type"], eid: ["_type"] },
+  ORG_REGION: { keys: ["organization_region"], uid: ["_region"], eid: ["_region"] },
+
   CONNECTED: { keys: ["server_connected"], uid: ["_server_connected"], eid: ["_connected"] },
+  // Whether every endpoint answered the integration's last poll
+  HEALTH_OK: { keys: ["server_health_ok"], uid: ["_server_health_ok"], eid: ["_health_ok"] },
+  // The server's own verdict from /v8/Health: on is a Problem
+  SERVICE_HEALTH: {
+    keys: ["service_health"],
+    uid: ["_service_health"],
+    eid: ["_service_health"],
+  },
   VERSION: { keys: ["server_version"], uid: ["_server_version"], eid: ["_product_version"] },
   LICENSE_STATUS: { keys: ["license_status"], uid: ["_license_status"], eid: ["_status"] },
   LICENSE_EXPIRATION: {
@@ -174,6 +329,9 @@ const PRIMARY_ROLES = {
   [MODEL.JOB]: [ROLE.LAST_STATUS, ROLE.LAST_BACKUP],
   [MODEL.COPY_JOB]: [ROLE.LAST_STATUS, ROLE.LAST_BACKUP],
   [MODEL.REPOSITORY]: [ROLE.ACCESSIBLE, ROLE.USED_SPACE],
+  [MODEL.PROXY]: [ROLE.PROXY_ONLINE, ROLE.PROXY_MAINTENANCE_MODE],
+  // Backed Up is filed as diagnostic, yet whether a tenant has any backup is the question
+  [MODEL.ORGANIZATION]: [ROLE.BACKED_UP, ROLE.LAST_BACKUP],
   [MODEL.SERVER]: [ROLE.CONNECTED, ROLE.VERSION],
   [MODEL.LICENSE]: [ROLE.LICENSE_STATUS, ROLE.LICENSE_EXPIRATION],
 };
@@ -185,35 +343,127 @@ const BADGE_ROLES = {
 };
 
 /**
- * Entities the layout is built around. The integration files several of them as diagnostic —
- * Connected, the license counts, the repository flags — which would otherwise leave the badges,
- * the license headline and whole device sections empty with diagnostics off.
+ * Diagnostic entities a device section is built around besides its headline: the license
+ * counts behind the usage headline, the server's health, a repository's maintenance status,
+ * an organization's new users and the rate in a job's session row.
  */
-const ESSENTIAL_ROLES = [
-  ...new Set([
-    ...Object.values(PRIMARY_ROLES).flat(),
-    ...Object.values(BADGE_ROLES).flat(),
-    ROLE.LICENSE_USED,
-    ROLE.LICENSE_TOTAL,
-  ]),
-];
+const EXTRA_ESSENTIAL_ROLES = {
+  [MODEL.JOB]: [ROLE.SESSION_RATE],
+  [MODEL.COPY_JOB]: [ROLE.SESSION_RATE],
+  [MODEL.REPOSITORY]: [ROLE.MAINTENANCE_STATUS],
+  [MODEL.ORGANIZATION]: [ROLE.NEW_USERS],
+  [MODEL.SERVER]: [ROLE.HEALTH_OK, ROLE.SERVICE_HEALTH],
+  [MODEL.LICENSE]: [ROLE.LICENSE_USED, ROLE.LICENSE_TOTAL],
+};
 
-/** Within a device section, states read best in this order. */
+/**
+ * Entities the layout is built around, per model. The integration files several of them as
+ * diagnostic — Connected, Health OK, the license counts, the repository flags, Backed Up —
+ * which would otherwise leave the badges, the headline and whole device sections empty with
+ * diagnostics off. Per model because suffixes repeat across models: a proxy's "_online" is its
+ * headline, an old repository's "_online" is only its cache state.
+ */
+const ESSENTIAL_ROLES = new Map(
+  Object.values(MODEL).map((model) => [
+    model,
+    [
+      ...new Set([
+        ...(PRIMARY_ROLES[model] || []),
+        ...(BADGE_ROLES[model] || []),
+        ...(EXTRA_ESSENTIAL_ROLES[model] || []),
+      ]),
+    ],
+  ]),
+);
+
+/** For an entity whose device is unknown: anything essential to any model. */
+const ANY_ESSENTIAL_ROLE = [...new Set([...ESSENTIAL_ROLES.values()].flat())];
+
+/**
+ * Within a device section, states read best in this order, then buttons in this order.
+ *
+ * Where suffixes overlap the earlier role wins the rank, so a repository's "_online" cache
+ * state ranks before a proxy's Online and an old "_cache_in_sync" before an organization's
+ * "_sync" — each device only has one of them, so its own order is unaffected.
+ */
 const ENTITY_ORDER = [
   ROLE.LAST_STATUS,
+  ROLE.LAST_SESSION,
+  ROLE.SESSION_DURATION,
+  ROLE.SESSION_TRANSFERRED,
+  ROLE.SESSION_OBJECTS,
+  ROLE.SESSION_RATE,
+  ROLE.BACKED_UP,
   ROLE.ACCESSIBLE,
+  ROLE.MAINTENANCE,
   ROLE.CACHE_IN_SYNC,
+  ROLE.PROXY_ONLINE,
   ROLE.ENABLED,
   ROLE.OUT_OF_DATE,
+  ROLE.MAINTENANCE_STATUS,
   ROLE.USED_SPACE,
   ROLE.LAST_BACKUP,
+  ROLE.PROTECTED_USERS,
+  ROLE.PROTECTED_GROUPS,
+  ROLE.PROTECTED_SITES,
+  ROLE.PROTECTED_TEAMS,
+  ROLE.LICENSED_USERS,
+  ROLE.NEW_USERS,
+  ROLE.ORG_SYNC,
+  ROLE.SYNC_STATUS,
+  ROLE.LAST_SYNC,
   ROLE.LAST_RUN,
   ROLE.NEXT_RUN,
+  ROLE.PROXY_MAINTENANCE_MODE,
+  ROLE.PROXY_CPU,
+  ROLE.PROXY_MEMORY,
   ROLE.CONNECTED,
+  ROLE.HEALTH_OK,
+  ROLE.SERVICE_HEALTH,
   ROLE.LICENSE_STATUS,
   ROLE.LICENSE_EXPIRATION,
   ROLE.LICENSE_USED,
   ROLE.LICENSE_TOTAL,
+  ROLE.VERSION,
+  ROLE.PROXY_VERSION,
+  ROLE.PROXY_OS,
+  ROLE.ORG_TYPE,
+  ROLE.ORG_REGION,
+  // Buttons
+  ROLE.JOB_START,
+  ROLE.JOB_STOP,
+  ROLE.JOB_ENABLE,
+  ROLE.JOB_DISABLE,
+  ROLE.RESCAN,
+  ROLE.START_MAINTENANCE,
+  ROLE.STOP_MAINTENANCE,
+  ROLE.SYNCHRONIZE,
+];
+
+/**
+ * Figures that belong together, shown as one compact row rather than a tile each: a job's
+ * latest session, and what an organization protects. `name` is the short label inside the row,
+ * whose title already says the rest; a name the user gave the entity still wins.
+ */
+const GLANCE_GROUPS = [
+  {
+    title: "Last session",
+    members: [
+      [ROLE.SESSION_DURATION, "Duration"],
+      [ROLE.SESSION_TRANSFERRED, "Transferred"],
+      [ROLE.SESSION_OBJECTS, "Objects"],
+      [ROLE.SESSION_RATE, "Rate"],
+    ],
+  },
+  {
+    title: "Protected",
+    members: [
+      [ROLE.PROTECTED_USERS, "Users"],
+      [ROLE.PROTECTED_GROUPS, "Groups"],
+      [ROLE.PROTECTED_SITES, "Sites"],
+      [ROLE.PROTECTED_TEAMS, "Teams"],
+    ],
+  },
 ];
 
 function options(config) {
@@ -267,14 +517,21 @@ function objectId(entity) {
 
 /** Whether the entity plays this role. See ROLE for the order identifiers are trusted in. */
 function hasRole(entity, role) {
+  if (role.domain && domainOf(entity) !== role.domain) return false;
   if (entity.translation_key) return role.keys.includes(entity.translation_key);
   if (entity.unique_id) return role.uid.some((suffix) => entity.unique_id.endsWith(suffix));
   const id = objectId(entity);
   return role.eid.some((suffix) => id.endsWith(suffix));
 }
 
-function isEssential(entity) {
-  return ESSENTIAL_ROLES.some((role) => hasRole(entity, role));
+function domainOf(entity) {
+  return (entity.entity_id || "").split(".")[0];
+}
+
+/** Whether the layout needs this entity even though it is filed as diagnostic. */
+function isEssential(entity, model) {
+  const roles = model === undefined ? ANY_ESSENTIAL_ROLE : ESSENTIAL_ROLES.get(model) || [];
+  return roles.some((role) => hasRole(entity, role));
 }
 
 /**
@@ -319,8 +576,9 @@ function orderRank(entity) {
  * Filtering on the registry rather than on entity_id patterns means renamed entities are
  * still found, and entities the user disabled or hid stay out of the way.
  */
-function entitiesByDevice(entities, opts) {
+function entitiesByDevice(entities, devices, opts) {
   const byDevice = new Map();
+  const modelOf = new Map(devices.map((device) => [device.id, device.model]));
 
   for (const entity of entities) {
     if (entity.platform !== INTEGRATION) continue;
@@ -329,7 +587,7 @@ function entitiesByDevice(entities, opts) {
     if (
       entity.entity_category === "diagnostic" &&
       !opts.include_diagnostics &&
-      !isEssential(entity)
+      !isEssential(entity, modelOf.get(entity.device_id))
     ) {
       continue;
     }
@@ -343,10 +601,11 @@ function entitiesByDevice(entities, opts) {
 
   // States first, in reading order, then buttons, then diagnostics — so a card leads with what
   // someone opened the dashboard to see and the controls sit together at the end
-  for (const list of byDevice.values()) {
+  for (const [deviceId, list] of byDevice) {
+    const model = modelOf.get(deviceId);
     list.sort((a, b) => {
       const category = (entity) => {
-        if (entity.entity_category === "diagnostic" && !isEssential(entity)) return 2;
+        if (entity.entity_category === "diagnostic" && !isEssential(entity, model)) return 2;
         if (isButton(entity)) return 1;
         return 0;
       };
@@ -439,6 +698,11 @@ function markdown(content, extra = {}) {
   return { type: "markdown", content, ...extra };
 }
 
+/** A compact row of figures, for values that read as one line rather than a tile each. */
+function glance(title, entities) {
+  return { type: "glance", title, entities, grid_options: { columns: "full" } };
+}
+
 function findByRoles(entities, roles) {
   for (const role of roles || []) {
     const found = entities.find((entity) => hasRole(entity, role));
@@ -497,6 +761,25 @@ function licenseSummary(usedId, totalId, warnAt) {
   ].join("\n");
 }
 
+/**
+ * An organization with no backup at all is unprotected however well its jobs do, and a job
+ * headline cannot say so: jobs cover some objects of a tenant, never the tenant as such.
+ */
+function organizationSummary(entityIds) {
+  return [
+    `{% set orgs = ${jinjaList(entityIds)} %}`,
+    "{% set r = orgs | map('states') | list %}",
+    "{% set total = orgs | count %}",
+    "{% set missing = r | select('eq', 'off') | list | count %}",
+    "{% set backed = r | select('eq', 'on') | list | count %}",
+    "{% if missing %}**{{ missing }} of {{ total }} organization{{ 's' if total > 1 else '' }}" +
+      " not backed up.**" +
+      "{% elif backed %}{{ backed }} of {{ total }} organization{{ 's' if total > 1 else '' }}" +
+      " backed up." +
+      "{% else %}Organization backups are not being reported.{% endif %}",
+  ].join("\n");
+}
+
 function summarySection(groups, byDevice, opts, columns) {
   // The same entity the tiles use, so the headline can never disagree with what is below it
   const collect = (model, roles) =>
@@ -510,6 +793,9 @@ function summarySection(groups, byDevice, opts, columns) {
     ...collect(MODEL.COPY_JOB, PRIMARY_ROLES[MODEL.COPY_JOB]),
   ];
 
+  // Only Backed Up: the template counts on and off, which a Last Backup timestamp is neither
+  const organizations = collect(MODEL.ORGANIZATION, [ROLE.BACKED_UP]);
+
   const licenseEntities = (groups.get(MODEL.LICENSE) || []).flatMap(
     (device) => byDevice.get(device.id) || [],
   );
@@ -518,6 +804,7 @@ function summarySection(groups, byDevice, opts, columns) {
 
   const parts = [];
   if (jobs.length) parts.push(jobSummary(jobs));
+  if (organizations.length) parts.push(organizationSummary(organizations));
   if (used && total) {
     parts.push(licenseSummary(used.entity_id, total.entity_id, opts.license_warn_at));
   }
@@ -537,18 +824,104 @@ function deviceSections(devices, byDevice, labels, multiServer) {
     const label = titleLabel(device, labels, multiServer);
     const title = label ? `${displayName(device)} — ${label}` : displayName(device);
 
-    const cards = entities.map((entity) => {
-      const name = entityName(entity, device);
-      // A button's state is the time it was last pressed, or nothing at all — noise next to a
-      // control whose label already says what it does
-      if (isButton(entity)) {
-        return tile(entity.entity_id, { name, hide_state: true });
-      }
-      return tile(entity.entity_id, { name });
-    });
-
-    return titledSection(title, MODEL_ICON.get(device.model), cards);
+    return titledSection(title, MODEL_ICON.get(device.model), [
+      ...deviceCards(entities, device),
+      ...problemNotes(entities),
+    ]);
   });
+}
+
+/**
+ * A tile per entity, in the order entitiesByDevice sorted them — except that the members of a
+ * glance group share one row, placed where the first of them would have been.
+ */
+function deviceCards(entities, device) {
+  const cards = [];
+  const grouped = new Set();
+
+  for (const entity of entities) {
+    if (grouped.has(entity)) continue;
+    const name = entityName(entity, device);
+
+    // A button's state is the time it was last pressed, or nothing at all — noise next to a
+    // control whose label already says what it does
+    if (isButton(entity)) {
+      cards.push(tile(entity.entity_id, { name, hide_state: true }));
+      continue;
+    }
+
+    const group = GLANCE_GROUPS.find((candidate) =>
+      candidate.members.some(([role]) => hasRole(entity, role)),
+    );
+    if (!group) {
+      cards.push(tile(entity.entity_id, { name }));
+      continue;
+    }
+
+    const row = [];
+    for (const [role, short] of group.members) {
+      const member = entities.find(
+        (candidate) => !grouped.has(candidate) && !isButton(candidate) && hasRole(candidate, role),
+      );
+      if (!member) continue;
+      grouped.add(member);
+      row.push({ entity: member.entity_id, name: member.name || short });
+    }
+    cards.push(glance(group.title, row));
+  }
+
+  return cards;
+}
+
+/**
+ * What went wrong, shown only while it is wrong.
+ *
+ * Health OK, Service Health and an organization's Sync each put the reason for a bad state in
+ * an attribute, and a bare "Problem" does not say where to look. The visibility condition is
+ * evaluated live, so nothing here is fixed at render time.
+ */
+function problemNotes(entities) {
+  const notes = [];
+
+  const health = findByRoles(entities, [ROLE.HEALTH_OK]);
+  if (health && health.entity_id.startsWith("binary_sensor.")) {
+    const id = health.entity_id;
+    notes.push(
+      markdown(
+        `{% set failed = state_attr('${id}', 'failed_endpoints') or [] %}` +
+          "{% if failed %}**Failing endpoints:** {{ failed | join(', ') }}" +
+          "{% else %}The last poll did not complete.{% endif %}",
+        { visibility: [{ condition: "state", entity: id, state: "off" }] },
+      ),
+    );
+  }
+
+  const service = findByRoles(entities, [ROLE.SERVICE_HEALTH]);
+  if (service) {
+    const id = service.entity_id;
+    notes.push(
+      markdown(
+        `{% set problems = state_attr('${id}', 'problems') or [] %}` +
+          "**Server health:** {% if problems %}{{ problems | join('; ') }}" +
+          "{% else %}the server reports itself unhealthy.{% endif %}",
+        { visibility: [{ condition: "state", entity: id, state: "on" }] },
+      ),
+    );
+  }
+
+  const sync = findByRoles(entities, [ROLE.ORG_SYNC]);
+  if (sync) {
+    const id = sync.entity_id;
+    notes.push(
+      markdown(
+        `{% set error = state_attr('${id}', 'error') %}` +
+          "**Last sync failed**{% if error %}: {{ error }}{% else %}.{% endif %}",
+        { visibility: [{ condition: "state", entity: id, state: "on" }] },
+      ),
+    );
+  }
+
+  return notes;
 }
 
 /** One tile per device, named for the device. */
@@ -636,7 +1009,7 @@ function emptyView(opts) {
 
 /** Everything the layout needs, derived once from the registries. */
 function analyse(registries, opts) {
-  const byDevice = entitiesByDevice(registries.entities || [], opts);
+  const byDevice = entitiesByDevice(registries.entities || [], registries.devices || [], opts);
   const devices = devicesWithEntities(registries.devices || [], byDevice);
 
   return {
@@ -665,12 +1038,14 @@ export function buildSections(group, registries, config) {
     );
 
   switch (group) {
+    case "organizations":
+      return sectionsFor([MODEL.ORGANIZATION]);
     case "jobs":
       return sectionsFor([MODEL.JOB, MODEL.COPY_JOB]);
     case "repositories":
       return sectionsFor([MODEL.REPOSITORY]);
     case "infrastructure":
-      return sectionsFor([MODEL.SERVER, MODEL.LICENSE]);
+      return sectionsFor([MODEL.PROXY, MODEL.SERVER, MODEL.LICENSE]);
     case "overview":
     default:
       return overviewSections(groups, byDevice, labels, multiServer, opts, columns);
