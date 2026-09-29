@@ -1,0 +1,90 @@
+name: Bug report
+description: The dashboard shows the wrong thing, leaves something out, or fails to load
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        The dashboard only shows what the [ha-veeam-365](https://github.com/Cenvora/ha-veeam-365)
+        integration creates. If an entity is missing or wrong under **Settings → Devices &
+        Services** too, please report it there instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: "What you expected, and what happened instead."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a dashboard with `strategy: type: custom:veeam-365`
+        2. …
+    validations:
+      required: false
+
+  - type: input
+    id: dashboard-version
+    attributes:
+      label: Dashboard version
+      description: "HACS, or the version in the page's browser console banner."
+    validations:
+      required: true
+
+  - type: input
+    id: integration-version
+    attributes:
+      label: ha-veeam-365 integration version
+      description: "HACS, or the `version` field in `manifest.json`."
+    validations:
+      required: true
+
+  - type: input
+    id: ha-version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.9.4"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser or app
+      placeholder: "e.g. Chrome 140, Home Assistant Companion for iOS"
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Dashboard configuration
+      description: "The strategy block from the dashboard's raw configuration editor."
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console errors
+      description: |
+        Open the browser's developer tools (F12) → Console, reload the dashboard, and paste
+        anything in red.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: "Drag images here. Redact hostnames if you need to."
+    validations:
+      required: false

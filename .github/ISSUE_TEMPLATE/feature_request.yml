@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a view, card, or layout change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: |
+        Describe the outcome you are after rather than the implementation — what would you
+        automate or see on a dashboard?
+    validations:
+      required: true
+  - type: input
+    id: veeam-feature
+    attributes:
+      label: Entities involved
+      description: "Which of the integration's entities or devices this would use, if you know."
+      placeholder: "e.g. the repository free space sensors"
+    validations:
+      required: false
+  - type: input
+    id: product-version
+    attributes:
+      label: Integration version
+      description: "Which build has this feature, if it is version-specific."
+      placeholder: "0.8.0"
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: "Example automations, screenshots, or links to Veeam documentation."
+    validations:
+      required: false
